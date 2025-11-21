@@ -1,13 +1,13 @@
 # Core dependencies
 streamlit==1.40.0
 
-# LangChain and related
+# LangChain and related - Fixed compatible versions
 langchain==0.1.20
 langchain-community==0.0.38
 langchain-openai==0.1.7
 langchain-chroma==0.1.4
 langchain-qdrant==0.1.4
-langchain-core==0.1.53
+langchain-core==0.1.52
 langgraph==0.0.32
 langchainhub==0.1.21
 

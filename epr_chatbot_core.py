@@ -2751,4 +2751,316 @@ def test_graph(question: str):
 print("✅ EPR Chatbot Core Module Loaded Successfully!")
 
 
+# ============================================================================
+# 🚀 PERFORMANCE OPTIMIZATIONS: ASYNC + STREAMING
+# ============================================================================
+
+import asyncio
+from typing import AsyncIterator, Dict, Any
+
+print("\n" + "="*80)
+print("🚀 Loading Performance Optimizations...")
+print("="*80)
+
+# ========== ASYNC PARALLEL RETRIEVAL ==========
+
+async def retrieve_faq_async(query: str, score_threshold: float = 0.6):
+    """Async version of FAQ retrieval"""
+    print("  🔍 [ASYNC] Retrieving FAQ...")
+
+    # Run synchronous retrieval in thread pool
+    loop = asyncio.get_event_loop()
+    documents = await loop.run_in_executor(
+        None,
+        retrieve_faq_top1,
+        query,
+        score_threshold
+    )
+
+    print(f"  ✅ [ASYNC] FAQ retrieval done: {len(documents)} docs")
+    return documents
+
+
+async def retrieve_legal_async(question: str):
+    """Async version of legal document retrieval"""
+    print("  📚 [ASYNC] Retrieving legal docs...")
+
+    # Run synchronous retrieval in thread pool
+    loop = asyncio.get_event_loop()
+
+    try:
+        documents = await loop.run_in_executor(
+            None,
+            fallback_retriever.invoke,
+            question
+        )
+    except Exception as e:
+        print(f"  ⚠️ [ASYNC] Error: {e}, falling back to similarity search")
+        documents = await loop.run_in_executor(
+            None,
+            vectorstore_fix.similarity_search,
+            question,
+            5
+        )
+
+    print(f"  ✅ [ASYNC] Legal retrieval done: {len(documents)} docs")
+    return documents
+
+
+async def parallel_retrieve(query: str, faq_threshold: float = 0.6):
+    """
+    Retrieve FAQ and legal documents in parallel for maximum speed
+
+    Args:
+        query: User's question
+        faq_threshold: Minimum score for FAQ match
+
+    Returns:
+        dict: {
+            'faq_docs': list of FAQ documents,
+            'legal_docs': list of legal documents,
+            'faq_time': float (seconds),
+            'legal_time': float (seconds)
+        }
+    """
+    import time
+
+    print("\n" + "="*80)
+    print("⚡ PARALLEL RETRIEVAL")
+    print("="*80)
+    print(f"Query: {query}")
+
+    start_time = time.time()
+
+    # Run both retrievals in parallel
+    faq_docs, legal_docs = await asyncio.gather(
+        retrieve_faq_async(query, faq_threshold),
+        retrieve_legal_async(query),
+        return_exceptions=True
+    )
+
+    total_time = time.time() - start_time
+
+    # Handle exceptions
+    if isinstance(faq_docs, Exception):
+        print(f"  ⚠️ FAQ retrieval failed: {faq_docs}")
+        faq_docs = []
+
+    if isinstance(legal_docs, Exception):
+        print(f"  ⚠️ Legal retrieval failed: {legal_docs}")
+        legal_docs = []
+
+    print(f"  ⚡ Total parallel retrieval time: {total_time:.2f}s")
+    print(f"  📊 Results: FAQ={len(faq_docs)}, Legal={len(legal_docs)}")
+    print("="*80)
+
+    return {
+        'faq_docs': faq_docs,
+        'legal_docs': legal_docs,
+        'total_time': total_time
+    }
+
+
+# ========== STREAMING LLM GENERATION ==========
+
+def create_streaming_llm():
+    """Create an LLM instance configured for streaming"""
+    return ChatOpenAI(
+        model="gpt-3.5-turbo",
+        temperature=0,
+        streaming=True
+    )
+
+streaming_llm = create_streaming_llm()
+
+
+async def generate_answer_streaming(query: str, documents: list, source_type: str = "faq") -> AsyncIterator[str]:
+    """
+    Generate answer with streaming for real-time display
+
+    Args:
+        query: User question
+        documents: Retrieved documents
+        source_type: "faq" or "legal"
+
+    Yields:
+        str: Chunks of the generated response
+    """
+    if not documents:
+        yield "Xin lỗi, tôi không tìm thấy thông tin phù hợp. Bạn có thể hỏi chi tiết hơn không?"
+        return
+
+    # Create appropriate prompt based on source
+    if source_type == "faq":
+        doc = documents[0]
+        faq_question = doc.metadata.get("Câu_hỏi", "")
+        faq_answer = doc.page_content
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Bạn là trợ lý AI chuyên về luật EPR Việt Nam.
+Trả lời dựa trên FAQ, giữ thông tin chính xác, ngắn gọn và thân thiện."""),
+            ("user", """Câu hỏi FAQ: {faq_question}
+Câu trả lời FAQ: {faq_answer}
+
+Câu hỏi người dùng: {user_question}
+
+Trả lời:""")
+        ])
+
+        chain = prompt | streaming_llm
+
+        async for chunk in chain.astream({
+            "faq_question": faq_question,
+            "faq_answer": faq_answer,
+            "user_question": query
+        }):
+            if hasattr(chunk, 'content'):
+                yield chunk.content
+
+    else:  # legal documents
+        context = format_docs(documents)
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Bạn là trợ lý AI chuyên về pháp luật EPR Việt Nam.
+Trả lời dựa HOÀN TOÀN trên tài liệu, trích dẫn Điều/Chương cụ thể."""),
+            ("user", """Tài liệu pháp luật:
+{context}
+
+Câu hỏi: {question}
+
+Trả lời:""")
+        ])
+
+        chain = prompt | streaming_llm
+
+        async for chunk in chain.astream({
+            "context": context,
+            "question": query
+        }):
+            if hasattr(chunk, 'content'):
+                yield chunk.content
+
+
+# ========== OPTIMIZED CHATBOT PIPELINE ==========
+
+async def optimized_chatbot_pipeline(
+    query: str,
+    chat_history: str = "",
+    faq_threshold: float = 0.6,
+    use_parallel: bool = True
+) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Optimized chatbot pipeline with parallel retrieval and streaming
+
+    Args:
+        query: User's question
+        chat_history: Previous conversation context
+        faq_threshold: Minimum FAQ match score
+        use_parallel: If True, retrieve FAQ + legal docs in parallel
+
+    Yields:
+        dict: Status updates and response chunks
+    """
+
+    print("\n" + "🔹"*40)
+    print("🚀 OPTIMIZED PIPELINE START")
+    print("🔹"*40)
+
+    # Step 1: Yield status - starting retrieval
+    yield {
+        'type': 'status',
+        'message': '🔍 Searching knowledge base...',
+        'stage': 'retrieval'
+    }
+
+    # Step 2: Parallel retrieval
+    if use_parallel:
+        results = await parallel_retrieve(query, faq_threshold)
+        faq_docs = results['faq_docs']
+        legal_docs = results['legal_docs']
+    else:
+        # Sequential fallback
+        faq_docs = await retrieve_faq_async(query, faq_threshold)
+        legal_docs = []
+        if not faq_docs:
+            legal_docs = await retrieve_legal_async(query)
+
+    # Step 3: Determine which documents to use
+    documents_to_use = []
+    source_type = None
+
+    if faq_docs:
+        documents_to_use = faq_docs
+        source_type = "faq"
+        yield {
+            'type': 'status',
+            'message': '✅ Found answer in FAQ',
+            'stage': 'generation',
+            'source': 'faq'
+        }
+    elif legal_docs:
+        documents_to_use = legal_docs
+        source_type = "legal"
+        yield {
+            'type': 'status',
+            'message': '✅ Found relevant legal documents',
+            'stage': 'generation',
+            'source': 'legal'
+        }
+    else:
+        yield {
+            'type': 'status',
+            'message': '⚠️ No relevant documents found',
+            'stage': 'complete'
+        }
+        yield {
+            'type': 'response_complete',
+            'text': 'Xin lỗi, tôi không tìm thấy thông tin phù hợp trong cơ sở dữ liệu.',
+            'documents': [],
+            'source': None
+        }
+        return
+
+    # Step 4: Stream the response
+    full_response = ""
+
+    async for chunk in generate_answer_streaming(query, documents_to_use, source_type):
+        full_response += chunk
+        yield {
+            'type': 'response_chunk',
+            'chunk': chunk,
+            'stage': 'streaming'
+        }
+
+    # Step 5: Final metadata
+    yield {
+        'type': 'response_complete',
+        'text': full_response,
+        'documents': documents_to_use,
+        'source': source_type,
+        'stage': 'complete'
+    }
+
+    print("🔹"*40)
+    print("✅ OPTIMIZED PIPELINE COMPLETE")
+    print("🔹"*40 + "\n")
+
+
+# ========== HELPER FUNCTION FOR STREAMLIT ==========
+
+def run_optimized_chatbot(query: str, chat_history: str = ""):
+    """
+    Synchronous wrapper for Streamlit
+    Returns an async generator that can be consumed by Streamlit
+    """
+    return optimized_chatbot_pipeline(query, chat_history)
+
+
+print("✅ Performance optimizations loaded!")
+print("   - Async parallel retrieval")
+print("   - Streaming LLM responses")
+print("   - Optimized pipeline")
+print("="*80 + "\n")
+
+
 

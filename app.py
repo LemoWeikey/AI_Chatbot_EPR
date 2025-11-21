@@ -490,72 +490,137 @@ if user_input and chatbot_core:
     # Get chat history
     chat_history = chatbot_core.get_full_chat_history(max_exchanges=5)
 
-    # Prepare initial state
-    initial_state = {
-        "question": user_input,
-        "generation": "",
-        "documents": [],
-        "original_question": user_input,
-        "chat_history": chat_history,
-        "retries": 0,
-        "generation_retries": 0,
-        "original_chat_history": "",
-        "web_urls": "",
-        "hallucination_detected": False,
-        "answer_quality": "",
-        "grade_result": ""
-    }
+    # Display user message immediately
+    with st.container():
+        st.markdown(f'<div class="chat-message user-message"><strong>👤 Bạn:</strong><br>{user_input}</div>', unsafe_allow_html=True)
 
-    # Show spinner while processing
-    with st.spinner("🤔 Thinking..."):
+    # Create placeholder for streaming response
+    response_placeholder = st.empty()
+    status_placeholder = st.empty()
+
+    try:
+        import asyncio
+
+        # Run optimized pipeline with streaming
+        async def stream_response():
+            full_response = ""
+            documents_used = []
+            source_type = None
+            current_status = ""
+
+            async for update in chatbot_core.optimized_chatbot_pipeline(user_input, chat_history):
+                update_type = update.get('type')
+
+                if update_type == 'status':
+                    # Update status message
+                    current_status = update.get('message', '')
+                    status_placeholder.info(current_status)
+
+                elif update_type == 'response_chunk':
+                    # Stream response chunks
+                    chunk = update.get('chunk', '')
+                    full_response += chunk
+
+                    # Display streaming response
+                    response_placeholder.markdown(
+                        f'<div class="chat-message assistant-message"><strong>🌱 Trợ lý EPR:</strong><br>{full_response}▌</div>',
+                        unsafe_allow_html=True
+                    )
+
+                elif update_type == 'response_complete':
+                    # Final response
+                    full_response = update.get('text', full_response)
+                    documents_used = update.get('documents', [])
+                    source_type = update.get('source')
+
+            # Clear status
+            status_placeholder.empty()
+
+            # Display final response without cursor
+            response_placeholder.markdown(
+                f'<div class="chat-message assistant-message"><strong>🌱 Trợ lý EPR:</strong><br>{full_response}</div>',
+                unsafe_allow_html=True
+            )
+
+            return full_response, documents_used, source_type
+
+        # Run async function
+        full_response, documents_used, source_type = asyncio.run(stream_response())
+
+        # Prepare metadata
+        metadata = {
+            "documents": [
+                {
+                    "metadata": doc.metadata if hasattr(doc, 'metadata') else {},
+                    "page_content": doc.page_content if hasattr(doc, 'page_content') else str(doc)
+                }
+                for doc in documents_used
+            ],
+            "source": source_type,
+            "hallucination_detected": False,
+            "grade_result": "useful" if documents_used else "no_docs",
+            "retries": 0,
+            "generation_retries": 0,
+            "web_urls": ""
+        }
+
+        # Add assistant message to session state
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": full_response,
+            "metadata": metadata
+        })
+
+        # Save to memory
         try:
-            # Invoke the chatbot
-            final_state = chatbot_core.app.invoke(initial_state)
-
-            # Extract response
-            response = final_state.get("generation", "I couldn't generate a response.")
-
-            # Prepare metadata
-            metadata = {
-                "documents": [
-                    {
-                        "metadata": doc.metadata,
-                        "page_content": doc.page_content
-                    }
-                    for doc in final_state.get("documents", [])
-                ],
-                "hallucination_detected": final_state.get("hallucination_detected", False),
-                "grade_result": final_state.get("grade_result", "unknown"),
-                "retries": final_state.get("retries", 0),
-                "generation_retries": final_state.get("generation_retries", 0),
-                "web_urls": final_state.get("web_urls", "")
-            }
-
-            # Add assistant message to chat
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response,
-                "metadata": metadata
-            })
-
-            # Save to memory
-            try:
-                chatbot_core.conversation_memory.save_context(
-                    {"input": user_input},
-                    {"generation": response}
-                )
-            except Exception as e:
-                st.warning(f"Could not save to memory: {e}")
-
+            chatbot_core.conversation_memory.save_context(
+                {"input": user_input},
+                {"generation": full_response}
+            )
         except Exception as e:
-            st.error(f"Error processing your question: {e}")
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": f"I encountered an error: {str(e)}",
-                "metadata": {}
-            })
+            st.warning(f"Could not save to memory: {e}")
 
-    # Rerun to display new messages
+        # Show document sources after streaming completes
+        if documents_used:
+            with st.expander("📚 Tài liệu tham khảo", expanded=False):
+                for i, doc in enumerate(documents_used, 1):
+                    if hasattr(doc, 'metadata'):
+                        doc_meta = doc.metadata
+                        if source_type == "faq":
+                            st.markdown(f"""
+                            <div class="source-doc">
+                                <strong>❓ FAQ {i}:</strong> {doc_meta.get('Câu_hỏi', 'N/A')}<br>
+                                <small>Score: {doc_meta.get('score', 'N/A')}</small><br>
+                                <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #065f46;">{doc.page_content[:200]}...</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"""
+                            <div class="source-doc">
+                                <strong>📄 Tài liệu {i}:</strong> Điều {doc_meta.get('Dieu', 'N/A')} - {doc_meta.get('Dieu_Name', 'Không rõ')}<br>
+                                <small>📖 Chương {doc_meta.get('Chuong', 'N/A')}: {doc_meta.get('Chuong_Name', '')}</small><br>
+                                <small>📑 Mục {doc_meta.get('Muc', 'N/A')}: {doc_meta.get('Muc_Name', '')}</small><br>
+                                <p style="margin-top: 0.5rem; font-size: 0.875rem; color: #065f46;">💡 {doc.page_content[:200]}...</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"Error processing your question: {e}")
+        import traceback
+        with st.expander("🔍 Error Details"):
+            st.code(traceback.format_exc())
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": f"Xin lỗi, đã xảy ra lỗi: {str(e)}",
+            "metadata": {}
+        })
+
+    # Small delay to show the streaming effect
+    import time
+    time.sleep(0.5)
+
+    # Rerun to update message history
     st.rerun()
 
 # Eco-friendly Footer
