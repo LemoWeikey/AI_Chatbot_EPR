@@ -6,33 +6,15 @@ Vietnamese EPR (Extended Producer Responsibility) Legal Question-Answering Syste
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file (for local development)
+# Load environment variables from .env file
 load_dotenv()
 
-# Function to get secrets from either .env or Streamlit secrets
-def get_secret(key, default=''):
-    """Get secret from environment or Streamlit secrets"""
-    # First try environment variable (local .env)
-    value = os.getenv(key)
-    if value:
-        return value
-
-    # Then try Streamlit secrets (cloud deployment)
-    try:
-        import streamlit as st
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-    except:
-        pass
-
-    return default
-
-# Set environment variables (works for both local and cloud)
-os.environ['LANGCHAIN_TRACING_V2'] = get_secret('LANGCHAIN_TRACING_V2', 'true')
-os.environ['LANGCHAIN_ENDPOINT'] = get_secret('LANGCHAIN_ENDPOINT', 'https://api.smith.langchain.com')
-os.environ['TAVILY_API_KEY'] = get_secret('TAVILY_API_KEY', '')
-os.environ['LANGCHAIN_API_KEY'] = get_secret('LANGCHAIN_API_KEY', '')
-os.environ['OPENAI_API_KEY'] = get_secret('OPENAI_API_KEY', '')
+# Set environment variables
+os.environ['LANGCHAIN_TRACING_V2'] = os.getenv('LANGCHAIN_TRACING_V2', 'true')
+os.environ['LANGCHAIN_ENDPOINT'] = os.getenv('LANGCHAIN_ENDPOINT', 'https://api.smith.langchain.com')
+os.environ['TAVILY_API_KEY'] = os.getenv('TAVILY_API_KEY', '')
+os.environ['LANGCHAIN_API_KEY'] = os.getenv('LANGCHAIN_API_KEY', '')
+os.environ['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY', '')
 
 
 # Updated imports - ChromaTranslator is now in a different location
@@ -76,14 +58,40 @@ import uuid
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
-# Initialize Qdrant client with fallback to in-memory
-try:
-    client = QdrantClient(path="./qdrant_faq_db")
-    print("✅ Using persistent Qdrant database at ./qdrant_faq_db")
-except Exception as e:
-    print(f"⚠️  Could not use file-based database: {e}")
-    print("📝 Using in-memory Qdrant database instead")
-    client = QdrantClient(":memory:")
+# Initialize Qdrant client - Cloud or Local
+USE_QDRANT_CLOUD = os.getenv('USE_QDRANT_CLOUD', 'false').lower() == 'true'
+QDRANT_CLOUD_URL = os.getenv('QDRANT_CLOUD_URL')
+QDRANT_API_KEY = os.getenv('QDRANT_API_KEY')
+
+if USE_QDRANT_CLOUD and QDRANT_CLOUD_URL and QDRANT_API_KEY:
+    # Use Qdrant Cloud
+    try:
+        client = QdrantClient(
+            url=QDRANT_CLOUD_URL,
+            api_key=QDRANT_API_KEY,
+        )
+        print("✅ Connected to Qdrant Cloud")
+        print(f"   URL: {QDRANT_CLOUD_URL}")
+    except Exception as e:
+        print(f"❌ Failed to connect to Qdrant Cloud: {e}")
+        print("⚠️  Falling back to local storage...")
+        try:
+            client = QdrantClient(path="./qdrant_faq_db")
+            print("✅ Using persistent Qdrant database at ./qdrant_faq_db")
+        except Exception as e2:
+            print(f"⚠️  Could not use file-based database: {e2}")
+            print("📝 Using in-memory Qdrant database instead")
+            client = QdrantClient(":memory:")
+else:
+    # Use local Qdrant
+    print("📍 Using local Qdrant storage")
+    try:
+        client = QdrantClient(path="./qdrant_faq_db")
+        print("✅ Using persistent Qdrant database at ./qdrant_faq_db")
+    except Exception as e:
+        print(f"⚠️  Could not use file-based database: {e}")
+        print("📝 Using in-memory Qdrant database instead")
+        client = QdrantClient(":memory:")
 
 collection_name = "faq_collection"
 
@@ -402,8 +410,9 @@ rewrite_prompt_legal_improved = ChatPromptTemplate.from_messages([
 - "từ các điều trên", "dựa vào các điều đã nói" → Xác định các Điều từ lịch sử
 
 **⚠️ CỰC KỲ QUAN TRỌNG:**
-- CHỈ thay thế đại từ, KHÔNG thêm ngữ cảnh khác
-- Nếu câu hỏi đã có số Điều cụ thể → GIỮ NGUYÊN, đừng thêm chủ đề
+- CHỈ thay thế đại từ, KHÔNG thay đổi số điều cụ thể
+- Nếu câu hỏi đã có SỐ ĐIỀU CỤ THỂ (ví dụ: "điều 2", "Điều 77") → GIỮ NGUYÊN HOÀN TOÀN
+- TUYỆT ĐỐI KHÔNG thay đổi số điều trong câu hỏi gốc
 - KHÔNG thêm từ khóa từ lịch sử vào câu hỏi đã rõ ràng
 
 **QUY TẮC QUAN TRỌNG:**
@@ -454,6 +463,18 @@ Câu hỏi: Ai chịu trách nhiệm tái chế?"""),
 Câu hỏi: Quy định về bao bì là gì?"""),
     ("assistant", "Quy định về bao bì là gì?"),
 
+    # IMPORTANT: Questions with specific article numbers - NEVER CHANGE THEM
+    ("human", """Lịch sử: User: Cho tôi hỏi về Điều 5? Assistant: Theo Điều 5...
+User: Điều 6 quy định gì? Assistant: Theo Điều 6...
+
+Câu hỏi: Cho tôi hỏi chi tiết về điều 2 và điều 3?"""),
+    ("assistant", "Cho tôi hỏi chi tiết về điều 2 và điều 3?"),
+
+    ("human", """Lịch sử: User: Điều 10 là gì? Assistant: Điều 10 về...
+
+Câu hỏi: Điều 1 quy định gì?"""),
+    ("assistant", "Điều 1 quy định gì?"),
+
     ("human", """Lịch sử: (trống)
 
 Câu hỏi: Cho tôi hỏi về điều luật số 1?"""),
@@ -481,19 +502,20 @@ Câu hỏi: Làm thế nào để nấu phở?"""),
 Câu hỏi: {question}
 
 **HƯỚNG DẪN PHÂN TÍCH:**
-1. Câu hỏi có chứa đại từ mơ hồ không? (đó, này, nó, ở trên, vừa rồi)
-   - CÓ → Thay thế bằng thông tin từ lịch sử
-   - KHÔNG → Chuyển sang bước 2
+1. Câu hỏi có SỐ ĐIỀU CỤ THỂ không? (điều 1, Điều 77, điều 2 và điều 3)
+   - CÓ SỐ CỤ THỂ → GIỮ NGUYÊN HOÀN TOÀN (đừng thay đổi số điều!)
+   - KHÔNG CÓ SỐ → Chuyển sang bước 2
 
-2. Câu hỏi đã đầy đủ và rõ ràng chưa?
+2. Câu hỏi có chứa đại từ mơ hồ không? (đó, này, nó, ở trên, vừa rồi)
+   - CÓ → Thay thế bằng thông tin từ lịch sử
+   - KHÔNG → Chuyển sang bước 3
+
+3. Câu hỏi đã đầy đủ và rõ ràng chưa?
    - ĐÃ RÕ RÀNG → GIỮ NGUYÊN (không thêm gì)
    - CHƯA RÕ → Làm rõ từ lịch sử
 
-3. Đây là câu hỏi mới hay câu hỏi tiếp theo?
-   - CÂU HỎI MỚI (chủ đề khác) → GIỮ NGUYÊN
-   - CÂU HỎI TIẾP THEO (có đại từ) → Thay thế đại từ
-
 **LƯU Ý:**
+- ⚠️ TUYỆT ĐỐI GIỮ NGUYÊN số điều trong câu hỏi gốc (điều 2 phải vẫn là điều 2, KHÔNG thay thành số khác!)
 - Nếu có "các điều ở trên", "những điều đã nói" → TÌM TẤT CẢ Điều trong lịch sử và liệt kê
 - Nếu có "điều đó", "nó" → TÌM Điều GẦN NHẤT trong lịch sử
 - LUÔN LUÔN giữ dạng câu hỏi với dấu "?"
@@ -521,6 +543,16 @@ Chuyển thành: "Điều 77 có nói về bao bì và trách nhiệm không?"  
 Lịch sử: "User: Điều 77 là gì?\nAssistant: Điều 77 về trách nhiệm..."
 Câu gốc: "Điều đó có nói về bao bì không?"
 Chuyển thành: "Điều 77 có nói về bao bì không?"  ✅ CHỈ thay "đó" → "77"
+
+❌ SAI - THAY ĐỔI SỐ ĐIỀU:
+Lịch sử: "User: Điều 5 là gì?\nAssistant: Điều 5...\nUser: Điều 6?\nAssistant: Điều 6..."
+Câu gốc: "Cho tôi hỏi chi tiết về điều 2 và điều 3?"
+Chuyển thành: "Cho tôi hỏi chi tiết về Điều 6 và Điều 7?"  ❌ SAI! Đã thay đổi số điều!
+
+✅ ĐÚNG - GIỮ NGUYÊN SỐ ĐIỀU:
+Lịch sử: "User: Điều 5 là gì?\nAssistant: Điều 5...\nUser: Điều 6?\nAssistant: Điều 6..."
+Câu gốc: "Cho tôi hỏi chi tiết về điều 2 và điều 3?"
+Chuyển thành: "Cho tôi hỏi chi tiết về điều 2 và điều 3?"  ✅ ĐÚNG! Giữ nguyên số điều gốc!
 
 Câu hỏi viết lại (CHỈ câu hỏi ngắn, hoặc giữ nguyên nếu đã rõ):"""),
 ])
@@ -1470,61 +1502,73 @@ llm_creative = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7)
 # embeddings = OpenAIEmbeddings()
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-# --- Step 5: Create in-memory Qdrant vector store ---
-vectorstore_fix = QdrantVectorStore.from_documents(
-    documents=vector_docs,
-    embedding=embeddings,
-    collection_name="legal_documents",
-    location=":memory:"  # In-memory mode (no server needed)
-)
 
-print("✅ Qdrant vector store created successfully with", len(vector_docs), "documents.")
+# --- Step 5: Create Qdrant vector store (Cloud or Local) ---
+if USE_QDRANT_CLOUD and QDRANT_CLOUD_URL and QDRANT_API_KEY:
+    # Use Qdrant Cloud for law collection
+    print("📡 Using Qdrant Cloud for law collection...")
+    vectorstore_fix = QdrantVectorStore.from_existing_collection(
+        embedding=embeddings,
+        collection_name="law_collection",
+        url=QDRANT_CLOUD_URL,
+        api_key=QDRANT_API_KEY,
+    )
+    print("✅ Connected to law_collection on Qdrant Cloud")
+else:
+    # Use local/in-memory Qdrant for law collection
+    print("📍 Using local Qdrant for law collection...")
+    vectorstore_fix = QdrantVectorStore.from_documents(
+        documents=vector_docs,
+        embedding=embeddings,
+        collection_name="legal_documents",
+        location=":memory:"  # In-memory mode (no server needed)
+    )
+    print("✅ Qdrant vector store created successfully with", len(vector_docs), "documents.")
 
 from langchain.chains.query_constructor.ir import Comparator, Operator
 from langchain.retrievers.self_query.qdrant import QdrantTranslator
 
 # --- Mô tả tổng quát về cấu trúc ---
 mo_ta_van_ban = """Văn bản pháp luật Việt Nam có cấu trúc phân cấp:
-- CHƯƠNG (Chuong_Name): Phạm vi rộng nhất
-- MỤC (Muc_Name): Chủ đề cụ thể trong chương
-- ĐIỀU (Dieu_Name): Quy định chi tiết trong mục
+- ĐIỀU (Dieu): Quy định chi tiết (ví dụ: "Điều 9. Phạm vi điều chỉnh")
+- CHƯƠNG (Chuong): Phạm vi rộng nhất - LUÔN dùng SỐ LA MÃ (ví dụ: "Chương I", "Chương II", "Chương III", "Chương IV"...)
+- MỤC (Muc): Chủ đề cụ thể - dùng số Ả Rập (ví dụ: "Mục 1", "Mục 2", "Mục 3"...)
+
+⚠️ QUAN TRỌNG - Định dạng Chương:
+- Chương LUÔN dùng SỐ LA MÃ: I, II, III, IV, V, VI, VII, VIII, IX, X, XI, XII, XIII
+- VÍ DỤ CHUYỂN ĐỔI:
+  * "chương 1" hoặc "Chương 1" → "Chương I"
+  * "chương 2" hoặc "Chương 2" → "Chương II"
+  * "chương 3" hoặc "Chương 3" → "Chương III"
+  * "chương 10" hoặc "Chương 10" → "Chương X"
+- Viết hoa chữ 'C': "Chương" (KHÔNG phải "chương")
 
 Khi tìm kiếm:
-- Nếu câu hỏi về chủ đề rộng → tìm trong Chuong_Name hoặc Muc_Name
-- Nếu câu hỏi về quy định cụ thể → tìm trong Dieu_Name
-- Để tìm kiếm văn bản chứa từ khóa, LUÔN dùng operator "like"
-- Để kết hợp nhiều điều kiện, dùng "and()" để nối các điều kiện
+- SỐ ĐIỀU (ví dụ: "Điều 9") → dùng Dieu_Number với eq: eq("Dieu_Number", 9)
+- CHƯƠNG (ví dụ: "chương 2", "Chương II") → chuyển sang SỐ LA MÃ VÀ viết hoa, dùng LIKE: like("Chuong", "Chương II")
+- MỤC (ví dụ: "mục 2", "Mục 2") → viết hoa chữ 'M', dùng LIKE: like("Muc", "Mục 2")
+- Kết hợp MỤC và CHƯƠNG → dùng AND: and(like("Muc", "Mục 2"), like("Chuong", "Chương II"))
 """
 
 metadata_fields = [
     AttributeInfo(
-        name="Chuong",
-        description="Số chương",
+        name="Dieu_Number",
+        description="Số điều (integer, ví dụ: 9 cho Điều 9)",
         type="integer",
     ),
     AttributeInfo(
-        name="Chuong_Name",
-        description="Tên chương (phạm vi rộng)",
+        name="Dieu",
+        description="Tên đầy đủ của điều (ví dụ: 'Điều 9. Phạm vi điều chỉnh')",
+        type="string",
+    ),
+    AttributeInfo(
+        name="Chuong",
+        description="Tên chương (ví dụ: 'Chương I. NHỮNG QUY ĐỊNH CHUNG')",
         type="string",
     ),
     AttributeInfo(
         name="Muc",
-        description="Số mục",
-        type="integer",
-    ),
-    AttributeInfo(
-        name="Muc_Name",
-        description="Tên mục (chủ đề cụ thể)",
-        type="string",
-    ),
-    AttributeInfo(
-        name="Dieu",
-        description="Số điều",
-        type="integer",
-    ),
-    AttributeInfo(
-        name="Dieu_Name",
-        description="Tên điều (quy định chi tiết)",
+        description="Tên mục (ví dụ: 'Mục 1 BẢO VỆ MÔI TRƯỜNG NƯỚC')",
         type="string",
     ),
 ]
@@ -1546,18 +1590,33 @@ prompt_truy_van_phap_luat = get_query_constructor_prompt(
     ],
     allowed_operators=[Operator.AND, Operator.OR],  # Enable AND and OR
     examples=[
-        ("Điều 6 quy định gì?", {"query": "nội dung điều 6", "filter": 'eq("Dieu", 6)'}),
-        ("Quy định về môi trường không khí", {"query": "môi trường nước", "filter": 'like("Dieu_Name", "môi trường nước")'}),
-        ("Chương nào về môi trường không khí", {"query": "môi trường không khí", "filter": 'like("Chuong_Name", "không khí")'}),
-        ("Mục nào về môi trường không khí", {"query": "môi trường không khí", "filter": 'like("Muc_Name", "không khí")'}),
+        # Tìm theo số điều
+        ("Điều 6 quy định gì?", {"query": "nội dung điều 6", "filter": 'eq("Dieu_Number", 6)'}),
+        ("Cho tôi hỏi về Điều 9?", {"query": "về điều 9", "filter": 'eq("Dieu_Number", 9)'}),
 
-        ("Nội dung Mục 2 và Chương 3", {"query": "nội dung mục 2 chương 3", "filter": 'and(eq("Muc", 2), eq("Chuong", 3))'}),
-        ("Điều 5 hoặc Điều 6", {"query": "điều 5 điều 6", "filter": 'or(eq("Dieu", 5), eq("Dieu", 6))'}),
+        # Tìm theo chương (chuyển đổi sang số La Mã)
+        ("Chương 1 quy định gì?", {"query": "chương 1", "filter": 'like("Chuong", "Chương I")'}),
+        ("Chương 2 quy định gì?", {"query": "chương 2", "filter": 'like("Chuong", "Chương II")'}),
+        ("chương II quy định gì?", {"query": "chương II", "filter": 'like("Chuong", "Chương II")'}),
+        ("Chương III về gì?", {"query": "chương III", "filter": 'like("Chuong", "Chương III")'}),
 
-        # ✅ THÊM EXAMPLE CHO NHIỀU ĐIỀU
-        ("Từ Điều 1 và Điều 2 có thể áp dụng được gì?", {"query": "áp dụng điều 1 điều 2", "filter": 'or(eq("Dieu", 1), eq("Dieu", 2))'}),
-        ("Điều 3 và Điều 4 quy định gì?", {"query": "quy định điều 3 điều 4", "filter": 'or(eq("Dieu", 3), eq("Dieu", 4))'}),
+        # Tìm theo mục (viết hoa chữ M)
+        ("mục 1 về gì?", {"query": "mục 1", "filter": 'like("Muc", "Mục 1")'}),
+        ("Mục 2 về gì?", {"query": "mục 2", "filter": 'like("Muc", "Mục 2")'}),
 
+        # Kết hợp mục và chương (chuyển đổi số sang La Mã, viết hoa)
+        ("Mục 2 của chương 2 quy định gì?", {"query": "mục 2 chương 2", "filter": 'and(like("Muc", "Mục 2"), like("Chuong", "Chương II"))'}),
+        ("Cho tôi hỏi về Mục 1 của chương 1?", {"query": "mục 1 chương 1", "filter": 'and(like("Muc", "Mục 1"), like("Chuong", "Chương I"))'}),
+        ("Mục 3 Chương IV quy định gì?", {"query": "mục 3 chương IV", "filter": 'and(like("Muc", "Mục 3"), like("Chuong", "Chương IV"))'}),
+
+        # Tìm theo nội dung
+        ("Quy định về môi trường không khí", {"query": "môi trường không khí", "filter": 'like("Dieu", "môi trường không khí")'}),
+        ("Chương nào về bảo vệ môi trường", {"query": "bảo vệ môi trường", "filter": 'like("Chuong", "bảo vệ môi trường")'}),
+
+        # Nhiều điều
+        ("Điều 5 hoặc Điều 6", {"query": "điều 5 điều 6", "filter": 'or(eq("Dieu_Number", 5), eq("Dieu_Number", 6))'}),
+
+        # Không có filter cụ thể
         ("Trách nhiệm của tổ chức sản xuất", {"query": "trách nhiệm tổ chức sản xuất", "filter": None}),
     ],
 )
@@ -2449,6 +2508,7 @@ class GraphState(TypedDict):
     question: str
     generation: str
     documents: List[str]
+    
     original_question: str
     chat_history: str
     retries: int
