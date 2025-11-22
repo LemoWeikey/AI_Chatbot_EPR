@@ -2180,8 +2180,21 @@ def decide_to_generate(state):
 ### Web Search - Return Links Only
 
 from langchain_community.tools.tavily_search import TavilySearchResults
+import os
 
-web_search_tool = TavilySearchResults(k=3)
+# Initialize web search tool with error handling
+try:
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_api_key or tavily_api_key == "your-tavily-api-key-here":
+        print("⚠️ WARNING: TAVILY_API_KEY not configured. Web search will not work.")
+        print("   Please set TAVILY_API_KEY in your .env file to enable web search.")
+        web_search_tool = None
+    else:
+        web_search_tool = TavilySearchResults(k=3)
+        print("✅ Tavily web search tool initialized successfully!")
+except Exception as e:
+    print(f"⚠️ WARNING: Failed to initialize Tavily web search: {e}")
+    web_search_tool = None
 
 def web_search(state):
     """
@@ -2197,8 +2210,30 @@ def web_search(state):
     print("---WEB SEARCH FOR ADDITIONAL RESOURCES---")
     question = state["question"]
 
+    # Check if web search tool is available
+    if web_search_tool is None:
+        print("   ⚠️ Web search tool not available (TAVILY_API_KEY not configured)")
+        links_text = f"""Câu hỏi "{question}" không tìm thấy trong cơ sở dữ liệu pháp luật EPR.
+
+⚠️ THÔNG BÁO:
+Tính năng tìm kiếm web chưa được kích hoạt. Để sử dụng tính năng này:
+1. Đăng ký tài khoản tại https://tavily.com
+2. Lấy API key
+3. Thêm TAVILY_API_KEY vào file .env
+
+💡 GỢI Ý:
+- Thử đặt câu hỏi khác hoặc cụ thể hơn
+- Kiểm tra chính tả và từ khóa
+- Liên hệ chuyên gia pháp lý để được tư vấn trực tiếp
+"""
+        return {
+            "question": question,
+            "web_urls": links_text,
+        }
+
     try:
         # Perform web search
+        print(f"   🔍 Searching web for: {question}")
         search_results = web_search_tool.invoke({"query": question})
 
         # Format results as links
@@ -2232,7 +2267,18 @@ def web_search(state):
 
     except Exception as e:
         print(f"   ❌ Web search error: {e}")
-        links_text = "Không thể thực hiện tìm kiếm web. Vui lòng thử lại sau."
+        import traceback
+        print(f"   Error details: {traceback.format_exc()}")
+        links_text = f"""Không thể thực hiện tìm kiếm web cho câu hỏi "{question}".
+
+❌ LỖI: {str(e)}
+
+💡 GỢI Ý:
+- Kiểm tra kết nối Internet
+- Kiểm tra TAVILY_API_KEY trong file .env
+- Thử lại sau vài phút
+- Liên hệ quản trị viên nếu lỗi vẫn tiếp diễn
+"""
 
     return {
         "question": question,
@@ -2521,7 +2567,31 @@ class GraphState(TypedDict):
 
 workflow = StateGraph(GraphState)
 
+# Add initial routing node (no transformation - just routes)
+def initial_route_node(state):
+    """Initial routing node - passes question through without transformation"""
+    print("---INITIAL ROUTING NODE---")
+    question = state["question"]
+    chat_history = get_full_chat_history()
+
+    # Save original question and chat history at the very beginning
+    if "original_question" not in state or not state.get("original_question"):
+        print(f"  💾 Saving original question: {question}")
+        state["original_question"] = question
+
+    if "original_chat_history" not in state or not state.get("original_chat_history"):
+        print(f"  💾 Saving chat history snapshot ({len(chat_history)} chars)")
+        state["original_chat_history"] = chat_history
+
+    # Just return state without transformation
+    return {
+        **state,
+        "question": question,
+        "chat_history": chat_history
+    }
+
 # Add nodes
+workflow.add_node("initial_route", initial_route_node)
 workflow.add_node("retrieve_faq", retrieve_faq_node)
 
 workflow.add_node("generate_faq", generate_faq_node)
@@ -2545,16 +2615,19 @@ workflow.add_node("generate_web2", generate_web) # generatae
 
 workflow.add_node("new_round_router", new_round_router)
 
-# Set entry point with routing
-workflow.set_entry_point("transform_query1")
+# Set entry point with routing BEFORE transformation
+workflow.set_entry_point("initial_route")
 workflow.add_conditional_edges(
-    "transform_query1",
+    "initial_route",
     route_question_faq,
     {
-        "vectorstore_faq": "retrieve_faq",
-        "chitchat": "chitchat1",
+        "vectorstore_faq": "transform_query1",  # Transform only for FAQ path
+        "chitchat": "chitchat1",  # No transformation for chitchat
     },
 )
+
+# After transforming FAQ queries, retrieve
+workflow.add_edge("transform_query1", "retrieve_faq")
 
 # Add edges
 workflow.add_edge("chitchat1", END)
@@ -2966,6 +3039,60 @@ async def optimized_chatbot_pipeline(
     print("🚀 OPTIMIZED PIPELINE START")
     print("🔹"*40)
 
+    # Step 0: Check if this is chitchat BEFORE any retrieval
+    print("---CHECKING IF CHITCHAT---")
+    try:
+        # Use the FAQ router to check if this is chitchat
+        route_result = question_router_faq.invoke({
+            "question": query,
+            "chat_history": chat_history
+        })
+
+        datasource = route_result.get("datasource") if isinstance(route_result, dict) else getattr(route_result, "datasource", None)
+        print(f"   Routing decision: {datasource}")
+
+        if datasource == 'chitchat':
+            print("   ✅ Detected as chitchat - generating friendly response")
+            yield {
+                'type': 'status',
+                'message': '💬 Generating friendly response...',
+                'stage': 'chitchat'
+            }
+
+            # Call chitchat function
+            state = {
+                "question": query,
+                "chat_history": chat_history
+            }
+            result_state = chitchat(state)
+            chitchat_response = result_state.get("generation", "Xin chào!")
+
+            # Stream the chitchat response
+            yield {
+                'type': 'response_chunk',
+                'chunk': chitchat_response,
+                'stage': 'streaming'
+            }
+
+            # Complete
+            yield {
+                'type': 'response_complete',
+                'text': chitchat_response,
+                'documents': [],
+                'source': 'chitchat',
+                'stage': 'complete'
+            }
+
+            print("🔹"*40)
+            print("✅ CHITCHAT COMPLETE")
+            print("🔹"*40 + "\n")
+            return
+    except Exception as e:
+        print(f"   ⚠️ Error in chitchat routing: {e}")
+        # Continue to retrieval if routing fails
+
+    print("   ➡️ Not chitchat - proceeding to document retrieval")
+
     # Step 1: Yield status - starting retrieval
     yield {
         'type': 'status',
@@ -3008,17 +3135,46 @@ async def optimized_chatbot_pipeline(
             'source': 'legal'
         }
     else:
+        # No documents found - try web search
         yield {
             'type': 'status',
-            'message': '⚠️ No relevant documents found',
-            'stage': 'complete'
+            'message': '🌐 Searching web for additional information...',
+            'stage': 'web_search'
         }
-        yield {
-            'type': 'response_complete',
-            'text': 'Xin lỗi, tôi không tìm thấy thông tin phù hợp trong cơ sở dữ liệu.',
-            'documents': [],
-            'source': None
+
+        # Call web search
+        web_state = {
+            "question": query
         }
+        web_result = web_search(web_state)
+        web_urls = web_result.get("web_urls", "")
+
+        if web_urls:
+            yield {
+                'type': 'response_chunk',
+                'chunk': web_urls,
+                'stage': 'streaming'
+            }
+
+            yield {
+                'type': 'response_complete',
+                'text': web_urls,
+                'documents': [],
+                'source': 'web_search',
+                'stage': 'complete'
+            }
+        else:
+            yield {
+                'type': 'response_complete',
+                'text': 'Xin lỗi, tôi không tìm thấy thông tin phù hợp trong cơ sở dữ liệu hoặc trên web.',
+                'documents': [],
+                'source': None,
+                'stage': 'complete'
+            }
+
+        print("🔹"*40)
+        print("✅ WEB SEARCH COMPLETE")
+        print("🔹"*40 + "\n")
         return
 
     # Step 4: Stream the response
