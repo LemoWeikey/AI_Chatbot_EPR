@@ -634,7 +634,7 @@ st.markdown("""
         <strong>💚 Trách nhiệm chung</strong> - Mỗi doanh nghiệp, mỗi công dân đều có vai trò
     </p>
     <p style="font-size: 0.85rem; color: #10b981; margin-top: 1rem;">
-        🔧 Xây dựng với LangChain, LangGraph & OpenAI |
+        🔧 Xây dựng với STS,EPR_PRO & OpenAI |
         🌿 Vì một Việt Nam xanh & phát triển bền vững
     </p>
 </div>
