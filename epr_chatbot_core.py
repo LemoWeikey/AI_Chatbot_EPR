@@ -3039,7 +3039,29 @@ async def optimized_chatbot_pipeline(
     print("🚀 OPTIMIZED PIPELINE START")
     print("🔹"*40)
 
-    # Step 0: Check if this is chitchat BEFORE any retrieval
+    # Step 0a: Rewrite question based on chat history (if needed)
+    original_query = query
+    if chat_history:
+        print("---REWRITING QUESTION BASED ON CHAT HISTORY---")
+        print(f"  Original query: {original_query}")
+        try:
+            # Use the question rewriter to contextualize the question
+            rewritten_query = question_rewriter_legal.invoke({
+                "question": query,
+                "chat_history": chat_history
+            })
+            print(f"  Rewritten query: {rewritten_query}")
+            # Use the rewritten query for retrieval
+            query = rewritten_query
+        except Exception as e:
+            print(f"  ⚠️ Error in question rewriting: {e}")
+            print(f"  ➡️ Continuing with original query")
+            # Continue with original query if rewriting fails
+    else:
+        print("---NO CHAT HISTORY - USING ORIGINAL QUESTION---")
+        print(f"  Query: {query}")
+
+    # Step 0b: Check if this is chitchat BEFORE any retrieval
     print("---CHECKING IF CHITCHAT---")
     try:
         # Use the FAQ router to check if this is chitchat
