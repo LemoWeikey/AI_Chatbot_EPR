@@ -553,12 +553,53 @@ for message in st.session_state.messages:
             with st.expander("📚 Tài Liệu Pháp Lý Tham Khảo"):
                 for i, doc in enumerate(metadata["documents"], 1):
                     doc_meta = doc.get("metadata", {})
+                    
+                    # Build the title with Chương, Mục, and Điều
+                    title_parts = []
+                    
+                    # Add Chương (Chapter) if available
+                    if doc_meta.get('Chuong'):
+                        chuong = doc_meta.get('Chuong')
+                        chuong_name = doc_meta.get('Chuong_Name', '')
+                        if chuong_name:
+                            title_parts.append(f"📖 {chuong}: {chuong_name}")
+                        else:
+                            title_parts.append(f"📖 {chuong}")
+                    
+                    # Add Mục (Section) if available
+                    if doc_meta.get('Muc'):
+                        muc = doc_meta.get('Muc')
+                        muc_name = doc_meta.get('Muc_Name', '')
+                        if muc_name:
+                            title_parts.append(f"📑 {muc}: {muc_name}")
+                        else:
+                            title_parts.append(f"📑 {muc}")
+                    
+                    # Add Điều (Article) - check if it already contains "Điều" prefix
+                    dieu = doc_meta.get('Dieu', 'N/A')
+                    dieu_name = doc_meta.get('Dieu_Name', 'Không rõ')
+                    
+                    # If Dieu already starts with "Điều", don't add it again
+                    if str(dieu).startswith('Điều'):
+                        if dieu_name and dieu_name != 'Không rõ':
+                            title_parts.append(f"📄 {dieu}: {dieu_name}")
+                        else:
+                            title_parts.append(f"📄 {dieu}")
+                    else:
+                        if dieu_name and dieu_name != 'Không rõ':
+                            title_parts.append(f"📄 Điều {dieu}: {dieu_name}")
+                        else:
+                            title_parts.append(f"📄 Điều {dieu}")
+                    
+                    # Join all parts with line breaks
+                    title_html = "<br>".join(title_parts)
+                    
                     st.markdown(f"""
                     <div class="source-box">
                         <div class="source-title">
-                            📄 Điều {doc_meta.get('Dieu', 'N/A')} - {doc_meta.get('Dieu_Name', 'Không rõ')}
+                            {title_html}
                         </div>
-                        <div style="margin-top: 0.5rem;">
+                        <div style="margin-top: 0.5rem; color: #44403c;">
                             {doc.get('page_content', '')[:300]}...
                         </div>
                     </div>
