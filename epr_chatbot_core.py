@@ -691,6 +691,7 @@ def chitchat(state):
 - Nếu câu trả lời dựa trên văn bản pháp luật → nêu rõ tên văn bản và Điều/Mục/Chương
 - Nếu thông tin từ web → nói rõ là tham khảo
 - Giữ giọng điệu thân thiện, chuyên nghiệp
+- **Nếu câu hỏi không rõ ràng hoặc vô nghĩa** (VD: chuỗi ký tự ngẫu nhiên), hãy lịch sự yêu cầu người dùng làm rõ câu hỏi của họ
 
 📋 Lịch sử hội thoại (ĐỌC KỸ):
 {chat_history}"""),
@@ -744,7 +745,9 @@ Bạn có quyền truy cập các nguồn:
 
 Quy tắc ưu tiên:
 - Nếu câu hỏi mang tính chào hỏi,trò chuyện, cảm ơn, giới thiệu bản thân → **chitchat**
-- Nếu câu hỏi liên quan đến nội dung pháp luật EPR → **vectorstore_faq**
+- Nếu câu hỏi là chuỗi ký tự vô nghĩa, ngẫu nhiên, hoặc không có ý nghĩa rõ ràng (VD: "E, P, A, L, A, Z", "asdfgh", "123 abc xyz") → **chitchat**
+- Nếu câu hỏi quá ngắn hoặc không rõ ràng và không liên quan đến pháp luật → **chitchat**
+- CHỈ nếu câu hỏi có ý nghĩa rõ ràng và liên quan đến nội dung pháp luật EPR → **vectorstore_faq**
 
 Câu hỏi hiện tại: {question}"""
 
