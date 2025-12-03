@@ -429,7 +429,7 @@ def create_pdf(chat_history):
     
     # Header
     pdf.set_font(font_family, '', 16)
-    pdf.cell(200, 10, text="EPR Legal Assistant - Chat Export", align='C')
+    pdf.cell(200, 10, "EPR Legal Assistant - Chat Export", align='C')
     pdf.ln(10)
     
     pdf.set_font(font_family, '', 12)
@@ -454,13 +454,13 @@ def create_pdf(chat_history):
         # Role
         pdf.set_font(font_family, 'B', 12)
         pdf.set_text_color(4, 120, 87) # Forest Green
-        pdf.cell(0, 10, text=f"{role}:")
+        pdf.cell(0, 10, f"{role}:")
         pdf.ln()
         
         # Content
         pdf.set_font(font_family, '', 11)
         pdf.set_text_color(0, 0, 0) # Black
-        pdf.multi_cell(0, 8, text=content)
+        pdf.multi_cell(0, 8, content)
             
         pdf.ln(5)
         
