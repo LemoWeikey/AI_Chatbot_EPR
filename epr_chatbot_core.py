@@ -233,23 +233,87 @@ def recreate_faq_collection(force=False):
 
 # ========== RETRIEVAL FUNCTION ==========
 
-def retrieve_faq_top1(query: str, score_threshold: float = 0.6):
-    """Retrieve top 1 FAQ with detailed scoring info"""
+# def retrieve_faq_top1(query: str, score_threshold: float = 0.6):
+#     """Retrieve top 1 FAQ with detailed scoring info"""
+#     print(f"\n{'='*80}")
+#     print(f"🔍 FAQ RETRIEVAL")
+#     print(f"{'='*80}")
+#     print(f"Query: {query}")
+#     print(f"Threshold: {score_threshold}")
+#     print(f"{'-'*80}")
+
+#     # Get query embedding
+#     query_vector = embeddings.embed_query(query)
+
+#     # Search
+#     results = client.query_points(
+#         collection_name=collection_name,
+#         query=query_vector,
+#         limit=3  # Get top 3 to see scores
+#     )
+
+#     if not results or not results.points:
+#         print("  ❌ No results found")
+#         print(f"{'='*80}\n")
+#         return []
+
+#     # Show all top matches
+#     print(f"  📊 Top matches:")
+#     for i, point in enumerate(results.points, 1):
+#         score = point.score
+#         question = point.payload['Câu_hỏi']
+#         status = "✅ PASS" if score >= score_threshold else "❌ FAIL"
+#         print(f"     {i}. {status} Score: {score:.4f} - {question[:50]}...")
+
+#     # Get best match
+#     best_point = results.points[0]
+#     best_score = best_point.score
+
+#     print(f"{'-'*80}")
+
+#     if best_score >= score_threshold:
+#         doc = Document(
+#             page_content=best_point.payload["Trả_lời"],
+#             metadata={
+#                 "Câu_hỏi": best_point.payload["Câu_hỏi"],
+#                 "score": best_score
+#             }
+#         )
+#         print(f"  ✅ Returning match (score: {best_score:.4f} >= {score_threshold})")
+#         print(f"{'='*80}\n")
+#         return [doc]
+#     else:
+#         print(f"  ⚠️  Best score {best_score:.4f} < threshold {score_threshold}")
+#         print(f"  💡 Try threshold={best_score:.2f} or lower")
+#         print(f"{'='*80}\n")
+#         return []
+def retrieve_faq_top1(query: str, score_threshold: float = 0.6, keyword_boost: float = 0.3):
+    """
+    Retrieve top 1 FAQ using hybrid approach: semantic + keyword matching
+    
+    Args:
+        query: User's question
+        score_threshold: Minimum combined score to accept a match
+        keyword_boost: Weight for keyword matching (0.0 - 1.0)
+        
+    Returns:
+        List containing the best matching Document, or empty list if no match
+    """
     print(f"\n{'='*80}")
-    print(f"🔍 FAQ RETRIEVAL")
+    print(f"🔍 FAQ RETRIEVAL (HYBRID: Semantic + Keyword)")
     print(f"{'='*80}")
     print(f"Query: {query}")
-    print(f"Threshold: {score_threshold}")
+    print(f"Threshold: {score_threshold} | Keyword Boost: {keyword_boost}")
     print(f"{'-'*80}")
 
-    # Get query embedding
+    # Get query embedding for semantic search
     query_vector = embeddings.embed_query(query)
 
-    # Search
+    # Search with more candidates for re-ranking
     results = client.query_points(
         collection_name=collection_name,
         query=query_vector,
-        limit=3  # Get top 3 to see scores
+        limit=5  # Get more candidates to re-rank
     )
 
     if not results or not results.points:
@@ -257,37 +321,110 @@ def retrieve_faq_top1(query: str, score_threshold: float = 0.6):
         print(f"{'='*80}\n")
         return []
 
-    # Show all top matches
-    print(f"  📊 Top matches:")
-    for i, point in enumerate(results.points, 1):
-        score = point.score
-        question = point.payload['Câu_hỏi']
-        status = "✅ PASS" if score >= score_threshold else "❌ FAIL"
-        print(f"     {i}. {status} Score: {score:.4f} - {question[:50]}...")
+    # Tokenize query for keyword matching
+    query_tokens = _tokenize_vietnamese(query)
+    print(f"  🔤 Query tokens: {query_tokens}")
+    print(f"{'-'*80}")
 
-    # Get best match
-    best_point = results.points[0]
-    best_score = best_point.score
+    # Calculate hybrid scores for all candidates
+    scored_results = []
+    for point in results.points:
+        semantic_score = point.score
+        question = point.payload['Câu_hỏi']
+        question_tokens = _tokenize_vietnamese(question)
+        
+        # Calculate keyword overlap (Jaccard-like similarity)
+        if query_tokens:
+            overlap_count = len(query_tokens & question_tokens)
+            keyword_score = overlap_count / len(query_tokens)
+        else:
+            keyword_score = 0.0
+        
+        # Combined score: semantic + keyword boost
+        final_score = semantic_score + (keyword_boost * keyword_score)
+        
+        scored_results.append({
+            'point': point,
+            'semantic_score': semantic_score,
+            'keyword_score': keyword_score,
+            'keyword_matches': query_tokens & question_tokens,
+            'final_score': final_score
+        })
+
+    # Re-rank by final combined score
+    scored_results.sort(key=lambda x: x['final_score'], reverse=True)
+
+    # Display top matches with detailed scoring
+    print(f"  📊 Top matches (re-ranked by hybrid score):")
+    for i, r in enumerate(scored_results[:5], 1):
+        status = "✅ PASS" if r['final_score'] >= score_threshold else "❌ FAIL"
+        print(f"     {i}. {status}")
+        print(f"        Semantic: {r['semantic_score']:.4f} | Keyword: {r['keyword_score']:.4f} | Final: {r['final_score']:.4f}")
+        print(f"        Matched words: {r['keyword_matches'] if r['keyword_matches'] else 'None'}")
+        print(f"        Q: {r['point'].payload['Câu_hỏi'][:70]}...")
+        print()
 
     print(f"{'-'*80}")
+
+    # Get best match after re-ranking
+    best = scored_results[0]
+    best_point = best['point']
+    best_score = best['final_score']
 
     if best_score >= score_threshold:
         doc = Document(
             page_content=best_point.payload["Trả_lời"],
             metadata={
                 "Câu_hỏi": best_point.payload["Câu_hỏi"],
-                "score": best_score
+                "score": best_score,
+                "semantic_score": best['semantic_score'],
+                "keyword_score": best['keyword_score']
             }
         )
-        print(f"  ✅ Returning match (score: {best_score:.4f} >= {score_threshold})")
+        print(f"  ✅ Returning match (final_score: {best_score:.4f} >= {score_threshold})")
+        print(f"     Semantic: {best['semantic_score']:.4f} + Keyword boost: {keyword_boost * best['keyword_score']:.4f}")
         print(f"{'='*80}\n")
         return [doc]
     else:
         print(f"  ⚠️  Best score {best_score:.4f} < threshold {score_threshold}")
-        print(f"  💡 Try threshold={best_score:.2f} or lower")
+        print(f"  💡 Suggestions:")
+        print(f"     - Try threshold={best_score:.2f} or lower")
+        print(f"     - Increase keyword_boost if query has specific terms")
         print(f"{'='*80}\n")
         return []
 
+
+def _tokenize_vietnamese(text: str) -> set:
+    """
+    Tokenize Vietnamese text for keyword matching
+    
+    Args:
+        text: Input text
+        
+    Returns:
+        Set of lowercase tokens (words)
+    """
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Remove punctuation but keep Vietnamese characters
+    text = re.sub(r'[^\w\s]', ' ', text)
+    
+    # Split into words
+    words = text.split()
+    
+    # Remove common stopwords (expand this list as needed)
+    stopwords = {
+        'là', 'và', 'của', 'có', 'được', 'trong', 'cho', 'với', 'các',
+        'này', 'đó', 'những', 'để', 'khi', 'từ', 'theo', 'về', 'như',
+        'thì', 'mà', 'nhưng', 'hoặc', 'nếu', 'vì', 'do', 'bởi', 'tại',
+        'đã', 'đang', 'sẽ', 'còn', 'cũng', 'rất', 'lại', 'nên', 'phải',
+        'bạn', 'tôi', 'chúng', 'họ', 'nó', 'gì', 'nào', 'sao', 'bao'}
+    
+    # Filter out stopwords and very short words
+    tokens = {w for w in words if w not in stopwords and len(w) > 1}
+    
+    return tokens
 # ========== RUN SETUP ==========
 
 print("🚀 Initializing FAQ system...")
@@ -3007,97 +3144,344 @@ def create_streaming_llm():
 streaming_llm = create_streaming_llm()
 
 
-async def generate_answer_streaming(query: str, documents: list, source_type: str = "faq") -> AsyncIterator[str]:
+# async def generate_answer_streaming(query: str, documents: list, source_type: str = "faq") -> AsyncIterator[str]:
+#     """
+#     Generate answer with streaming for real-time display
+
+#     Args:
+#         query: User question
+#         documents: Retrieved documents
+#         source_type: "faq" or "legal"
+
+#     Yields:
+#         str: Chunks of the generated response
+#     """
+#     if not documents:
+#         yield "Xin lỗi, tôi không tìm thấy thông tin phù hợp. Bạn có thể hỏi chi tiết hơn không?"
+#         return
+
+#     # GPT-3.5-turbo context limit
+#     MAX_CONTEXT_TOKENS = 15000  # Leave buffer for response
+
+#     # Create appropriate prompt based on source
+#     if source_type == "faq":
+#         doc = documents[0]
+#         faq_question = doc.metadata.get("Câu_hỏi", "")
+#         faq_answer = doc.page_content
+
+#         # Truncate FAQ answer if too long
+#         faq_answer = truncate_text(faq_answer, max_tokens=2000)
+
+#         prompt = ChatPromptTemplate.from_messages([
+#             ("system", """Bạn là trợ lý AI chuyên về luật EPR Việt Nam.
+# Trả lời dựa trên FAQ, giữ thông tin chính xác, ngắn gọn và thân thiện."""),
+#             ("user", """Câu hỏi FAQ: {faq_question}
+# Câu trả lời FAQ: {faq_answer}
+
+# Câu hỏi người dùng: {user_question}
+
+# Trả lời:""")
+#         ])
+
+#         chain = prompt | streaming_llm
+
+#         async for chunk in chain.astream({
+#             "faq_question": faq_question,
+#             "faq_answer": faq_answer,
+#             "user_question": query
+#         }):
+#             if hasattr(chunk, 'content'):
+#                 yield chunk.content
+
+#     else:  # legal documents
+#         # Limit documents to prevent context overflow
+#         # Max 4 documents, each with max 1000 tokens
+#         context = format_docs(documents, max_docs=4, max_tokens_per_doc=1000)
+
+#         # Verify total context size
+#         context_tokens = count_tokens(context)
+#         query_tokens = count_tokens(query)
+#         system_prompt_tokens = 100  # Rough estimate
+
+#         total_input_tokens = context_tokens + query_tokens + system_prompt_tokens
+
+#         print(f"   📊 Context size: {context_tokens} tokens")
+#         print(f"   📊 Query size: {query_tokens} tokens")
+#         print(f"   📊 Total input: {total_input_tokens} tokens")
+
+#         if total_input_tokens > MAX_CONTEXT_TOKENS:
+#             print(f"   ⚠️ Context too large ({total_input_tokens} tokens), further reducing...")
+#             # Further reduce if still too large
+#             context = format_docs(documents, max_docs=3, max_tokens_per_doc=600)
+#             context_tokens = count_tokens(context)
+#             print(f"   ✅ Reduced to {context_tokens} tokens")
+
+#         prompt = ChatPromptTemplate.from_messages([
+#             ("system", """Bạn là trợ lý AI chuyên về pháp luật EPR Việt Nam.
+# Trả lời dựa HOÀN TOÀN trên tài liệu, trích dẫn Điều/Chương cụ thể."""),
+#             ("user", """Tài liệu pháp luật:
+# {context}
+
+# Câu hỏi: {question}
+
+# Trả lời:""")
+#         ])
+
+#         chain = prompt | streaming_llm
+
+#         async for chunk in chain.astream({
+#             "context": context,
+#             "question": query
+#         }):
+#             if hasattr(chunk, 'content'):
+#                 yield chunk.content
+async def generate_answer_streaming(
+    query: str, 
+    documents: list, 
+    source_type: str = "faq",
+    response_style: str = "detailed",  # "detailed", "concise", "comprehensive"
+    include_examples: bool = True,
+    include_references: bool = True
+) -> AsyncIterator[str]:
     """
     Generate answer with streaming for real-time display
-
+    
     Args:
         query: User question
         documents: Retrieved documents
         source_type: "faq" or "legal"
-
+        response_style: Level of detail in response
+        include_examples: Whether to include practical examples
+        include_references: Whether to include legal references
+        
     Yields:
         str: Chunks of the generated response
     """
     if not documents:
-        yield "Xin lỗi, tôi không tìm thấy thông tin phù hợp. Bạn có thể hỏi chi tiết hơn không?"
+        yield """Xin lỗi, tôi không tìm thấy thông tin phù hợp với câu hỏi của bạn trong cơ sở dữ liệu hiện tại.
+
+**Gợi ý để tôi có thể hỗ trợ bạn tốt hơn:**
+- Hãy thử diễn đạt câu hỏi theo cách khác
+- Cung cấp thêm chi tiết về vấn đề bạn quan tâm
+- Cho biết bạn thuộc loại hình doanh nghiệp nào (sản xuất, nhập khẩu, phân phối...)
+
+Bạn có thể đặt câu hỏi lại được không?"""
         return
 
     # GPT-3.5-turbo context limit
-    MAX_CONTEXT_TOKENS = 15000  # Leave buffer for response
+    MAX_CONTEXT_TOKENS = 15000
 
-    # Create appropriate prompt based on source
     if source_type == "faq":
-        doc = documents[0]
-        faq_question = doc.metadata.get("Câu_hỏi", "")
-        faq_answer = doc.page_content
+        async for chunk in _generate_faq_answer(query, documents, response_style, include_examples):
+            yield chunk
+    else:
+        async for chunk in _generate_legal_answer(
+            query, documents, MAX_CONTEXT_TOKENS, 
+            response_style, include_examples, include_references
+        ):
+            yield chunk
 
-        # Truncate FAQ answer if too long
-        faq_answer = truncate_text(faq_answer, max_tokens=2000)
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """Bạn là trợ lý AI chuyên về luật EPR Việt Nam.
-Trả lời dựa trên FAQ, giữ thông tin chính xác, ngắn gọn và thân thiện."""),
-            ("user", """Câu hỏi FAQ: {faq_question}
-Câu trả lời FAQ: {faq_answer}
-
-Câu hỏi người dùng: {user_question}
-
-Trả lời:""")
+async def _generate_faq_answer(
+    query: str, 
+    documents: list, 
+    response_style: str,
+    include_examples: bool
+) -> AsyncIterator[str]:
+    """Generate detailed FAQ-based answer"""
+    
+    doc = documents[0]
+    faq_question = doc.metadata.get("Câu_hỏi", "")
+    faq_answer = doc.page_content
+    
+    # Get additional related FAQs if available
+    related_faqs = ""
+    if len(documents) > 1:
+        related_faqs = "\n".join([
+            f"- {d.metadata.get('Câu_hỏi', '')}: {truncate_text(d.page_content, 200)}"
+            for d in documents[1:4]
         ])
 
-        chain = prompt | streaming_llm
+    # Truncate FAQ answer if too long
+    faq_answer = truncate_text(faq_answer, max_tokens=2500, model="gpt-3.5-turbo")
+    
+    system_prompt = """Bạn là trợ lý AI chuyên gia về Luật Trách nhiệm mở rộng của nhà sản xuất (EPR) tại Việt Nam.
 
-        async for chunk in chain.astream({
-            "faq_question": faq_question,
-            "faq_answer": faq_answer,
-            "user_question": query
-        }):
-            if hasattr(chunk, 'content'):
-                yield chunk.content
+**VAI TRÒ CỦA BẠN:**
+- Cung cấp thông tin chính xác, đầy đủ và dễ hiểu về EPR
+- Giải thích các quy định pháp luật một cách thực tế và áp dụng được
+- Hỗ trợ doanh nghiệp hiểu và tuân thủ quy định EPR
 
-    else:  # legal documents
-        # Limit documents to prevent context overflow
-        # Max 4 documents, each with max 1000 tokens
-        context = format_docs(documents, max_docs=4, max_tokens_per_doc=1000)
+**NGUYÊN TẮC TRẢ LỜI:**
+1. **Chính xác**: Dựa hoàn toàn trên nội dung FAQ được cung cấp
+2. **Chi tiết**: Giải thích đầy đủ các khía cạnh của vấn đề
+3. **Thực tế**: Đưa ra ví dụ cụ thể khi phù hợp
+4. **Có cấu trúc**: Tổ chức câu trả lời logic, dễ theo dõi
+5. **Thân thiện**: Sử dụng ngôn ngữ dễ hiểu, tránh thuật ngữ phức tạp không cần thiết
 
-        # Verify total context size
+**CẤU TRÚC CÂU TRẢ LỜI NÊN BAO GỒM:**
+- Trả lời trực tiếp câu hỏi
+- Giải thích chi tiết các điểm quan trọng
+- Ví dụ minh họa (nếu phù hợp)
+- Lưu ý quan trọng hoặc ngoại lệ (nếu có)
+- Gợi ý thêm hoặc thông tin liên quan"""
+
+    user_prompt = f"""**CÂU HỎI GỐC TRONG FAQ:**
+{faq_question}
+
+**NỘI DUNG TRẢ LỜI TỪ FAQ:**
+{faq_answer}
+
+{f"**CÁC FAQ LIÊN QUAN:**{chr(10)}{related_faqs}" if related_faqs else ""}
+
+**CÂU HỎI CỦA NGƯỜI DÙNG:**
+{query}
+
+**YÊU CẦU:**
+Hãy trả lời câu hỏi của người dùng một cách chi tiết và đầy đủ, dựa trên thông tin FAQ ở trên. 
+
+Cấu trúc câu trả lời:
+1. Bắt đầu bằng câu trả lời ngắn gọn, trực tiếp
+2. Sau đó giải thích chi tiết các điểm quan trọng
+3. Nếu phù hợp, đưa ra ví dụ cụ thể để minh họa
+4. Kết thúc bằng lưu ý quan trọng hoặc gợi ý thêm
+
+Trả lời:"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", user_prompt)
+    ])
+
+    chain = prompt | streaming_llm
+
+    async for chunk in chain.astream({
+        "faq_question": faq_question,
+        "faq_answer": faq_answer,
+        "related_faqs": related_faqs,
+        "user_question": query
+    }):
+        if hasattr(chunk, 'content'):
+            yield chunk.content
+
+
+async def _generate_legal_answer(
+    query: str,
+    documents: list,
+    max_context_tokens: int,
+    response_style: str,
+    include_examples: bool,
+    include_references: bool
+) -> AsyncIterator[str]:
+    """Generate comprehensive legal document-based answer"""
+    
+    # Limit documents to prevent context overflow
+    context = format_docs(documents, max_docs=5, max_tokens_per_doc=1200)
+    
+    # Verify total context size
+    context_tokens = count_tokens(context)
+    query_tokens = count_tokens(query)
+    system_prompt_tokens = 500  # Account for detailed system prompt
+    
+    total_input_tokens = context_tokens + query_tokens + system_prompt_tokens
+    
+    print(f"   📊 Context size: {context_tokens} tokens")
+    print(f"   📊 Query size: {query_tokens} tokens")
+    print(f"   📊 Total input: {total_input_tokens} tokens")
+    
+    if total_input_tokens > max_context_tokens:
+        print(f"   ⚠️ Context too large ({total_input_tokens} tokens), reducing...")
+        context = format_docs(documents, max_docs=3, max_tokens_per_doc=800)
         context_tokens = count_tokens(context)
-        query_tokens = count_tokens(query)
-        system_prompt_tokens = 100  # Rough estimate
+        print(f"   ✅ Reduced to {context_tokens} tokens")
 
-        total_input_tokens = context_tokens + query_tokens + system_prompt_tokens
+    system_prompt = """Bạn là chuyên gia tư vấn pháp luật về Trách nhiệm mở rộng của nhà sản xuất (EPR) tại Việt Nam.
 
-        print(f"   📊 Context size: {context_tokens} tokens")
-        print(f"   📊 Query size: {query_tokens} tokens")
-        print(f"   📊 Total input: {total_input_tokens} tokens")
+**VAI TRÒ:**
+- Phân tích và giải thích các quy định pháp luật EPR
+- Cung cấp hướng dẫn thực thi cụ thể cho doanh nghiệp
+- Trích dẫn chính xác các điều khoản pháp luật liên quan
 
-        if total_input_tokens > MAX_CONTEXT_TOKENS:
-            print(f"   ⚠️ Context too large ({total_input_tokens} tokens), further reducing...")
-            # Further reduce if still too large
-            context = format_docs(documents, max_docs=3, max_tokens_per_doc=600)
-            context_tokens = count_tokens(context)
-            print(f"   ✅ Reduced to {context_tokens} tokens")
+**NGUYÊN TẮC TRẢ LỜI:**
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """Bạn là trợ lý AI chuyên về pháp luật EPR Việt Nam.
-Trả lời dựa HOÀN TOÀN trên tài liệu, trích dẫn Điều/Chương cụ thể."""),
-            ("user", """Tài liệu pháp luật:
+1. **Căn cứ pháp lý rõ ràng:**
+   - LUÔN trích dẫn số Điều, Khoản, Điểm cụ thể
+   - Nêu tên văn bản quy phạm pháp luật (Nghị định, Thông tư...)
+   - Không đưa ra thông tin không có trong tài liệu
+
+2. **Giải thích chi tiết:**
+   - Phân tích ý nghĩa của quy định
+   - Giải thích cách áp dụng trong thực tế
+   - Nêu rõ đối tượng áp dụng, phạm vi, điều kiện
+
+3. **Cấu trúc logic:**
+   - Bắt đầu bằng tóm tắt ngắn gọn
+   - Trình bày chi tiết theo thứ tự logic
+   - Phân biệt rõ các trường hợp khác nhau (nếu có)
+
+4. **Thực tiễn áp dụng:**
+   - Đưa ra ví dụ cụ thể khi cần thiết
+   - Nêu các bước thực hiện (nếu phù hợp)
+   - Cảnh báo về các lỗi thường gặp
+
+5. **Hoàn chỉnh và chuyên nghiệp:**
+   - Trả lời đầy đủ các khía cạnh của câu hỏi
+   - Nêu các quy định liên quan (nếu có)
+   - Đề xuất các vấn đề cần lưu ý thêm
+
+**ĐỊNH DẠNG TRẢ LỜI:**
+- Sử dụng đề mục rõ ràng khi cần thiết
+- In đậm các điểm quan trọng
+- Trích dẫn pháp luật trong ngoặc hoặc format rõ ràng"""
+
+    user_prompt = f"""**TÀI LIỆU PHÁP LUẬT THAM KHẢO:**
+
 {context}
 
-Câu hỏi: {question}
+**CÂU HỎI CỦA NGƯỜI DÙNG:**
+{query}
 
-Trả lời:""")
-        ])
+**YÊU CẦU TRẢ LỜI:**
+Hãy trả lời câu hỏi một cách chi tiết, chuyên nghiệp dựa HOÀN TOÀN trên tài liệu pháp luật được cung cấp.
 
-        chain = prompt | streaming_llm
+Cấu trúc câu trả lời nên bao gồm:
 
-        async for chunk in chain.astream({
-            "context": context,
-            "question": query
-        }):
-            if hasattr(chunk, 'content'):
-                yield chunk.content
+1. **Tóm tắt câu trả lời** (2-3 câu)
+   - Trả lời trực tiếp vào vấn đề chính
+
+2. **Căn cứ pháp lý**
+   - Trích dẫn cụ thể Điều, Khoản từ văn bản pháp luật
+   - Giải thích nội dung quy định
+
+3. **Giải thích chi tiết**
+   - Phân tích các điểm quan trọng
+   - Nêu rõ điều kiện, phạm vi áp dụng
+   - Phân biệt các trường hợp (nếu có)
+
+4. **Hướng dẫn thực hiện** (nếu phù hợp)
+   - Các bước cụ thể
+   - Thời hạn, hồ sơ cần thiết
+
+5. **Lưu ý quan trọng**
+   - Các ngoại lệ
+   - Điểm cần chú ý
+   - Chế tài xử phạt (nếu có)
+
+Trả lời:"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", user_prompt)
+    ])
+
+    chain = prompt | streaming_llm
+
+    async for chunk in chain.astream({
+        "context": context,
+        "question": query
+    }):
+        if hasattr(chunk, 'content'):
+            yield chunk.content
 
 
 # ========== OPTIMIZED CHATBOT PIPELINE ==========
