@@ -1720,7 +1720,7 @@ mo_ta_van_ban = """Văn bản pháp luật Việt Nam có cấu trúc phân cấ
 
 ⚠️ JSON OUTPUT FORMAT:
 - MUST use actual Vietnamese characters in the JSON output, NOT Unicode escape sequences
-- DO NOT use \uXXXX escapes - use the actual characters directly (ụ, ơ, ư, etc.)
+- DO NOT use \\uXXXX escapes - use the actual characters directly (ụ, ơ, ư, etc.)
 
 Khi tìm kiếm:
 - SỐ ĐIỀU (ví dụ: "Điều 9") → dùng Dieu_Number với eq: eq("Dieu_Number", 9)
