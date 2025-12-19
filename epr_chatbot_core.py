@@ -1822,35 +1822,48 @@ class UnicodeFixingParser:
         self.base_parser = base_parser
 
     def parse(self, text: str):
-        """Parse text after fixing Unicode escapes"""
+        """Parse text after fixing Unicode escapes in JSON only"""
         import re
-        import codecs
+        import json
 
-        # Fix malformed Unicode escapes by decoding them properly
-        # This handles cases like \u1ee4c by converting to actual Vietnamese characters
-        def fix_unicode_escapes(match):
-            try:
-                # Extract the Unicode code point and decode it
-                unicode_str = match.group(0)
-                # Use codecs to decode the escape sequence
-                return codecs.decode(unicode_str, 'unicode_escape')
-            except:
-                # If decoding fails, return the original string
-                return match.group(0)
-
-        # Find all \uXXXX patterns and fix them
+        # Only fix Unicode escapes within JSON structures
+        # Look for JSON object pattern in the text
         try:
-            # Try to fix Unicode escapes using built-in string encoding
-            fixed_text = text.encode().decode('unicode_escape')
-        except:
-            # If that fails, try manual replacement
-            try:
-                # Pattern to match \uXXXX sequences
-                pattern = r'\\u[0-9a-fA-F]{4}'
-                fixed_text = re.sub(pattern, fix_unicode_escapes, text)
-            except:
-                # If all else fails, use original text
+            # Find JSON object in text (handles multiline)
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+            if not json_match:
+                # Try without code fence
+                json_match = re.search(r'(\{.*?\})', text, re.DOTALL)
+
+            if json_match:
+                json_text = json_match.group(1)
+
+                # Replace Unicode escapes manually character by character
+                # This avoids truncated escape issues
+                def replace_unicode_escape(match):
+                    try:
+                        code = match.group(1)
+                        return chr(int(code, 16))
+                    except:
+                        return match.group(0)
+
+                # Pattern to match \uXXXX (4 hex digits)
+                fixed_json = re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode_escape, json_text)
+
+                # Verify it's valid JSON now
+                try:
+                    json.loads(fixed_json)
+                    # Replace the JSON in the original text
+                    fixed_text = text.replace(json_text, fixed_json)
+                except:
+                    # If still invalid, use original
+                    fixed_text = text
+            else:
                 fixed_text = text
+
+        except Exception as e:
+            print(f"  ⚠️ Unicode fix error: {e}, using original text")
+            fixed_text = text
 
         # Now parse with the base parser
         return self.base_parser.parse(fixed_text)
