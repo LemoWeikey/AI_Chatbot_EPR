@@ -1814,72 +1814,57 @@ parser_phap_luat = StructuredQueryOutputParser.from_components(
     allowed_operators=[Operator.AND, Operator.OR],  # Enable AND and OR
 )
 
-# --- Custom parser wrapper to fix Unicode escapes ---
-class UnicodeFixingParser:
-    """Wrapper around StructuredQueryOutputParser that fixes Unicode escape sequences"""
+# --- Custom function to fix Unicode escapes ---
+def fix_unicode_in_query_output(llm_output: str):
+    """Fix Unicode escape sequences in LLM output before parsing"""
+    import re
+    import json
 
-    def __init__(self, base_parser):
-        self.base_parser = base_parser
+    # Only fix Unicode escapes within JSON structures
+    try:
+        # Find JSON object in text (handles multiline)
+        json_match = re.search(r'```json\s*(\{.*?\})\s*```', llm_output, re.DOTALL)
+        if not json_match:
+            # Try without code fence
+            json_match = re.search(r'(\{.*?\})', llm_output, re.DOTALL)
 
-    def parse(self, text: str):
-        """Parse text after fixing Unicode escapes in JSON only"""
-        import re
-        import json
+        if json_match:
+            json_text = json_match.group(1)
 
-        # Only fix Unicode escapes within JSON structures
-        # Look for JSON object pattern in the text
-        try:
-            # Find JSON object in text (handles multiline)
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-            if not json_match:
-                # Try without code fence
-                json_match = re.search(r'(\{.*?\})', text, re.DOTALL)
-
-            if json_match:
-                json_text = json_match.group(1)
-
-                # Replace Unicode escapes manually character by character
-                # This avoids truncated escape issues
-                def replace_unicode_escape(match):
-                    try:
-                        code = match.group(1)
-                        return chr(int(code, 16))
-                    except:
-                        return match.group(0)
-
-                # Pattern to match \uXXXX (4 hex digits)
-                fixed_json = re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode_escape, json_text)
-
-                # Verify it's valid JSON now
+            # Replace Unicode escapes manually character by character
+            def replace_unicode_escape(match):
                 try:
-                    json.loads(fixed_json)
-                    # Replace the JSON in the original text
-                    fixed_text = text.replace(json_text, fixed_json)
+                    code = match.group(1)
+                    return chr(int(code, 16))
                 except:
-                    # If still invalid, use original
-                    fixed_text = text
-            else:
-                fixed_text = text
+                    return match.group(0)
 
-        except Exception as e:
-            print(f"  ⚠️ Unicode fix error: {e}, using original text")
-            fixed_text = text
+            # Pattern to match \uXXXX (4 hex digits)
+            fixed_json = re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode_escape, json_text)
 
-        # Now parse with the base parser
-        return self.base_parser.parse(fixed_text)
+            # Verify it's valid JSON now
+            try:
+                json.loads(fixed_json)
+                # Replace the JSON in the original text
+                return llm_output.replace(json_text, fixed_json)
+            except:
+                return llm_output
+        else:
+            return llm_output
 
-    def invoke(self, input_dict):
-        """Handle invoke calls for LCEL chains"""
-        # For LCEL chains, the input is the raw text output from LLM
-        if isinstance(input_dict, str):
-            return self.parse(input_dict)
-        return self.base_parser.invoke(input_dict)
+    except Exception as e:
+        print(f"  ⚠️ Unicode fix error: {e}, using original text")
+        return llm_output
 
-# Wrap the parser with Unicode fixing capability
-parser_phap_luat_fixed = UnicodeFixingParser(parser_phap_luat)
+# Create a simple wrapper using RunnableLambda
+from langchain_core.runnables import RunnableLambda
+
+# Wrap the fix function as a Runnable
+unicode_fixer = RunnableLambda(fix_unicode_in_query_output)
 
 # --- Kết hợp prompt và LLM ---
-llm_constructor_phap_luat = prompt_truy_van_phap_luat | llm_query | parser_phap_luat_fixed
+# Chain: prompt -> llm -> unicode_fixer -> parser
+llm_constructor_phap_luat = prompt_truy_van_phap_luat | llm_query | unicode_fixer | parser_phap_luat
 
 # --- Tạo SelfQueryRetriever ---
 retriever_phap_luat = SelfQueryRetriever(
