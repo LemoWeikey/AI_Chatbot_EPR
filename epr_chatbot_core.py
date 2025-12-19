@@ -1718,6 +1718,10 @@ mo_ta_van_ban = """Văn bản pháp luật Việt Nam có cấu trúc phân cấ
   * "chương 10" hoặc "Chương 10" → "Chương X"
 - Viết hoa chữ 'C': "Chương" (KHÔNG phải "chương")
 
+⚠️ JSON OUTPUT FORMAT:
+- MUST use actual Vietnamese characters in the JSON output, NOT Unicode escape sequences
+- DO NOT use \uXXXX escapes - use the actual characters directly (ụ, ơ, ư, etc.)
+
 Khi tìm kiếm:
 - SỐ ĐIỀU (ví dụ: "Điều 9") → dùng Dieu_Number với eq: eq("Dieu_Number", 9)
 - CHƯƠNG (ví dụ: "chương 2", "Chương II") → chuyển sang SỐ LA MÃ VÀ viết hoa, dùng LIKE: like("Chuong", "Chương II")
@@ -1749,7 +1753,8 @@ metadata_fields = [
 ]
 
 # --- Khởi tạo LLM ---
-llm_query = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+# Using gpt-4o-mini for better Unicode handling and structured output
+llm_query = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 # --- Tạo prompt constructor với allowed_operators ---
 prompt_truy_van_phap_luat = get_query_constructor_prompt(
@@ -2326,35 +2331,43 @@ def retrieve(state):
     if is_counting_question(question):
         print("  🔢 Detected COUNTING question")
 
-        # Parse the query to extract filters
-        structured_query = llm_constructor_phap_luat.invoke({"query": question})
+        try:
+            # Parse the query to extract filters
+            structured_query = llm_constructor_phap_luat.invoke({"query": question})
 
-        # Count articles with the filter
-        translator = QdrantTranslator(metadata_key="metadata")
-        count_result = count_articles_with_filter(
-            structured_query,
-            translator,
-            vectorstore_fix
-        )
+            # Count articles with the filter
+            translator = QdrantTranslator(metadata_key="metadata")
+            count_result = count_articles_with_filter(
+                structured_query,
+                translator,
+                vectorstore_fix
+            )
 
-        # Generate counting answer
-        counting_answer = generate_counting_answer(count_result, question)
+            # Generate counting answer
+            counting_answer = generate_counting_answer(count_result, question)
 
-        # Store the counting answer as a special document
-        from langchain_core.documents import Document
-        counting_doc = Document(
-            page_content=counting_answer,
-            metadata={"type": "counting_result", "count": count_result.get("count")}
-        )
+            # Store the counting answer as a special document
+            from langchain_core.documents import Document
+            counting_doc = Document(
+                page_content=counting_answer,
+                metadata={"type": "counting_result", "count": count_result.get("count")}
+            )
 
-        print(f"  ✅ Counting complete: {count_result.get('count')} articles")
+            print(f"  ✅ Counting complete: {count_result.get('count')} articles")
 
-        return {
-            **state,
-            "documents": [counting_doc],  # Return counting result as document
-            "original_question": original_question,
-            "is_counting_query": True  # Flag to handle differently in generation
-        }
+            return {
+                **state,
+                "documents": [counting_doc],  # Return counting result as document
+                "original_question": original_question,
+                "is_counting_query": True  # Flag to handle differently in generation
+            }
+
+        except Exception as e:
+            print(f"  ⚠️ Counting failed: {e}")
+            import traceback
+            traceback.print_exc()
+            print("  🔄 Falling back to normal retrieval...")
+            # Fall through to normal retrieval
 
     # ✅ NORMAL RETRIEVAL FOR NON-COUNTING QUESTIONS
     try:
@@ -3272,32 +3285,45 @@ async def retrieve_legal_async(question: str):
         print("  🔢 [ASYNC] Detected COUNTING question")
 
         def _count_sync():
-            # Parse the query to extract filters
-            structured_query = llm_constructor_phap_luat.invoke({"query": question})
+            try:
+                # Parse the query to extract filters
+                structured_query = llm_constructor_phap_luat.invoke({"query": question})
 
-            # Count articles with the filter
-            translator = QdrantTranslator(metadata_key="metadata")
-            count_result = count_articles_with_filter(
-                structured_query,
-                translator,
-                vectorstore_fix
-            )
+                # Count articles with the filter
+                translator = QdrantTranslator(metadata_key="metadata")
+                count_result = count_articles_with_filter(
+                    structured_query,
+                    translator,
+                    vectorstore_fix
+                )
 
-            # Generate counting answer
-            counting_answer = generate_counting_answer(count_result, question)
+                # Generate counting answer
+                counting_answer = generate_counting_answer(count_result, question)
 
-            # Store the counting answer as a special document
-            from langchain_core.documents import Document
-            counting_doc = Document(
-                page_content=counting_answer,
-                metadata={"type": "counting_result", "count": count_result.get("count")}
-            )
+                # Store the counting answer as a special document
+                from langchain_core.documents import Document
+                counting_doc = Document(
+                    page_content=counting_answer,
+                    metadata={"type": "counting_result", "count": count_result.get("count")}
+                )
 
-            return [counting_doc]
+                return [counting_doc]
+
+            except Exception as e:
+                print(f"  ⚠️ [ASYNC] Counting failed: {e}")
+                import traceback
+                traceback.print_exc()
+                # Return empty list to trigger fallback
+                return []
 
         documents = await loop.run_in_executor(None, _count_sync)
-        print(f"  ✅ [ASYNC] Counting done: {documents[0].metadata.get('count')} articles")
-        return documents
+
+        if documents:
+            print(f"  ✅ [ASYNC] Counting done: {documents[0].metadata.get('count')} articles")
+            return documents
+        else:
+            print(f"  ⚠️ [ASYNC] Counting failed, falling back to normal search")
+            # Fall through to normal retrieval
 
     # ✅ NORMAL RETRIEVAL FOR NON-COUNTING QUESTIONS
     try:
