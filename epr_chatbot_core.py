@@ -287,7 +287,7 @@ def recreate_faq_collection(force=False):
 #         print(f"  💡 Try threshold={best_score:.2f} or lower")
 #         print(f"{'='*80}\n")
 #         return []
-def retrieve_faq_top1(query: str, score_threshold: float = 0.6, keyword_boost: float = 0.3):
+def retrieve_faq_top1(query: str, score_threshold: float = 0.75, keyword_boost: float = 0.3):
     """
     Retrieve top 1 FAQ using hybrid approach: semantic + keyword matching
     
@@ -956,7 +956,7 @@ def retrieve_faq_node(state):
     print(f"  Question: {question}")
 
     # Use your existing retrieve_faq_top1 function
-    documents = retrieve_faq_top1(question, score_threshold=0.6)
+    documents = retrieve_faq_top1(question, score_threshold=0.75)
 
     print(f"  Documents found: {len(documents)}")
     print("="*80 + "\n")
@@ -1921,6 +1921,165 @@ print("✅ Fallback retriever created!")
 #     print(f"   Content: {doc.page_content[:100]}...")
 
 
+# ========== COUNTING LOGIC FOR "HOW MANY" QUESTIONS ==========
+
+def is_counting_question(query: str) -> bool:
+    """
+    Detect if a query is asking about quantity/count
+    Returns True if the query contains counting keywords
+    """
+    counting_keywords = [
+        "bao nhiêu",
+        "bao nhiều",
+        "có mấy",
+        "tổng số",
+        "tổng cộng",
+        "số lượng",
+        "đếm",
+        "mấy điều",
+        "how many"
+    ]
+
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in counting_keywords)
+
+
+def count_articles_with_filter(structured_query, translator, vectorstore) -> dict:
+    """
+    Count unique articles (Dieu_Number) matching the structured query filter
+
+    Args:
+        structured_query: The structured query object with filter
+        translator: QdrantTranslator instance
+        vectorstore: Qdrant vectorstore instance
+
+    Returns:
+        dict with 'count', 'articles' (list of Dieu_Numbers), and 'filter_description'
+    """
+    print(f"\n{'='*80}")
+    print(f"🔢 COUNTING ARTICLES WITH FILTER")
+    print(f"{'='*80}")
+
+    # Translate filter to Qdrant format
+    if not structured_query.filter:
+        print("⚠️  No filter found, cannot count")
+        return {"count": None, "articles": [], "filter_description": "không có bộ lọc"}
+
+    try:
+        result = translator.visit_structured_query(structured_query)
+
+        # Extract filter
+        if isinstance(result, tuple):
+            _, filter_dict = result
+            qdrant_filter = filter_dict.get('filter') if isinstance(filter_dict, dict) else filter_dict
+        elif isinstance(result, dict):
+            qdrant_filter = result.get('filter', result)
+        else:
+            qdrant_filter = result
+
+        print(f"   Using Qdrant filter: {qdrant_filter}")
+
+        # Use scroll to get ALL matching documents (not limited by k)
+        from qdrant_client.models import ScrollResult
+
+        # Get the Qdrant client from vectorstore
+        client = vectorstore.client
+        collection_name = vectorstore.collection_name
+
+        # Scroll through all matching documents
+        all_points = []
+        scroll_result = client.scroll(
+            collection_name=collection_name,
+            scroll_filter=qdrant_filter,
+            limit=100,  # Get 100 at a time
+            with_payload=True,
+            with_vectors=False
+        )
+
+        all_points.extend(scroll_result[0])
+
+        # Continue scrolling if there's more
+        next_page_offset = scroll_result[1]
+        while next_page_offset:
+            scroll_result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter=qdrant_filter,
+                limit=100,
+                offset=next_page_offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            all_points.extend(scroll_result[0])
+            next_page_offset = scroll_result[1]
+
+        print(f"   📊 Found {len(all_points)} total documents matching filter")
+
+        # Extract unique Dieu_Number values
+        dieu_numbers = set()
+        for point in all_points:
+            dieu_num = point.payload.get('metadata', {}).get('Dieu_Number')
+            if dieu_num is not None:
+                dieu_numbers.add(dieu_num)
+
+        sorted_articles = sorted(list(dieu_numbers))
+
+        print(f"   📌 Unique articles (Dieu_Number): {sorted_articles}")
+        print(f"   ✅ Total count: {len(sorted_articles)} điều luật")
+        print(f"{'='*80}\n")
+
+        # Create filter description for natural language response
+        filter_desc = structured_query.query
+
+        return {
+            "count": len(sorted_articles),
+            "articles": sorted_articles,
+            "filter_description": filter_desc,
+            "raw_filter": str(structured_query.filter)
+        }
+
+    except Exception as e:
+        print(f"❌ Error counting articles: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"count": None, "articles": [], "filter_description": "lỗi khi đếm"}
+
+
+def generate_counting_answer(count_result: dict, original_query: str) -> str:
+    """
+    Generate a natural language answer for counting questions
+    """
+    count = count_result.get("count")
+    articles = count_result.get("articles", [])
+    filter_desc = count_result.get("filter_description", "")
+
+    if count is None:
+        return "Xin lỗi, tôi không thể đếm số lượng điều luật dựa trên câu hỏi của bạn."
+
+    if count == 0:
+        return f"Không có điều luật nào trong phạm vi bạn yêu cầu ({filter_desc})."
+
+    # Create answer
+    answer = f"Có **{count} điều luật** trong phạm vi bạn yêu cầu"
+
+    # Add filter context if available
+    if "mục" in original_query.lower() or "chương" in original_query.lower():
+        answer += f" ({filter_desc})"
+
+    answer += "."
+
+    # List the articles if count is reasonable (< 20)
+    if count > 0 and count <= 20:
+        articles_str = ", ".join([f"Điều {a}" for a in articles])
+        answer += f"\n\nCụ thể: {articles_str}."
+    elif count > 20:
+        # Show first 10 and last 5
+        first_10 = ", ".join([f"Điều {a}" for a in articles[:10]])
+        last_5 = ", ".join([f"Điều {a}" for a in articles[-5:]])
+        answer += f"\n\nCụ thể: {first_10}, ... , {last_5}."
+
+    return answer
+
+
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -2163,6 +2322,41 @@ def retrieve(state):
     question = state["question"]
     original_question = state.get("original_question", question)
 
+    # ✅ CHECK IF THIS IS A COUNTING QUESTION
+    if is_counting_question(question):
+        print("  🔢 Detected COUNTING question")
+
+        # Parse the query to extract filters
+        structured_query = llm_constructor_phap_luat.invoke({"query": question})
+
+        # Count articles with the filter
+        translator = QdrantTranslator(metadata_key="metadata")
+        count_result = count_articles_with_filter(
+            structured_query,
+            translator,
+            vectorstore_fix
+        )
+
+        # Generate counting answer
+        counting_answer = generate_counting_answer(count_result, question)
+
+        # Store the counting answer as a special document
+        from langchain_core.documents import Document
+        counting_doc = Document(
+            page_content=counting_answer,
+            metadata={"type": "counting_result", "count": count_result.get("count")}
+        )
+
+        print(f"  ✅ Counting complete: {count_result.get('count')} articles")
+
+        return {
+            **state,
+            "documents": [counting_doc],  # Return counting result as document
+            "original_question": original_question,
+            "is_counting_query": True  # Flag to handle differently in generation
+        }
+
+    # ✅ NORMAL RETRIEVAL FOR NON-COUNTING QUESTIONS
     try:
         # documents = retriever_phap_luat.invoke(question)
         documents = fallback_retriever.invoke(question)
@@ -2182,7 +2376,8 @@ def retrieve(state):
     return {
         **state,
         "documents": documents,
-        "original_question": original_question
+        "original_question": original_question,
+        "is_counting_query": False
     }
 
 ### Generate
@@ -2310,11 +2505,25 @@ def generate(state):
     question = state["question"]
     documents = state["documents"]
     retries = state.get("retries", 0)
+    is_counting_query = state.get("is_counting_query", False)
 
+    # ✅ HANDLE COUNTING QUERIES - Return the counting answer directly
+    if is_counting_query and documents:
+        print("   🔢 Counting query detected - returning direct answer")
+        generation = documents[0].page_content  # The counting answer is stored in the document
+        print(f"   ✅ Answer: {generation[:200]}...")
+
+        return {
+            "documents": documents,
+            "question": question,
+            "generation": generation,
+            "retries": retries
+        }
+
+    # ✅ NORMAL GENERATION FOR NON-COUNTING QUERIES
     if not documents:
         print("   ⚠️ No documents available")
-
-
+        generation = "Xin lỗi, tôi không tìm thấy thông tin liên quan trong cơ sở dữ liệu."
     else:
         # Format documents with metadata
         context = format_docs(documents)
@@ -3052,12 +3261,45 @@ async def retrieve_faq_async(query: str, score_threshold: float = 0.6):
 
 
 async def retrieve_legal_async(question: str):
-    """Async version of legal document retrieval"""
+    """Async version of legal document retrieval with counting support"""
     print("  📚 [ASYNC] Retrieving legal docs...")
 
     # Run synchronous retrieval in thread pool
     loop = asyncio.get_event_loop()
 
+    # ✅ CHECK IF THIS IS A COUNTING QUESTION
+    if is_counting_question(question):
+        print("  🔢 [ASYNC] Detected COUNTING question")
+
+        def _count_sync():
+            # Parse the query to extract filters
+            structured_query = llm_constructor_phap_luat.invoke({"query": question})
+
+            # Count articles with the filter
+            translator = QdrantTranslator(metadata_key="metadata")
+            count_result = count_articles_with_filter(
+                structured_query,
+                translator,
+                vectorstore_fix
+            )
+
+            # Generate counting answer
+            counting_answer = generate_counting_answer(count_result, question)
+
+            # Store the counting answer as a special document
+            from langchain_core.documents import Document
+            counting_doc = Document(
+                page_content=counting_answer,
+                metadata={"type": "counting_result", "count": count_result.get("count")}
+            )
+
+            return [counting_doc]
+
+        documents = await loop.run_in_executor(None, _count_sync)
+        print(f"  ✅ [ASYNC] Counting done: {documents[0].metadata.get('count')} articles")
+        return documents
+
+    # ✅ NORMAL RETRIEVAL FOR NON-COUNTING QUESTIONS
     try:
         documents = await loop.run_in_executor(
             None,
