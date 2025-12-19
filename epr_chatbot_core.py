@@ -1814,8 +1814,59 @@ parser_phap_luat = StructuredQueryOutputParser.from_components(
     allowed_operators=[Operator.AND, Operator.OR],  # Enable AND and OR
 )
 
+# --- Custom parser wrapper to fix Unicode escapes ---
+class UnicodeFixingParser:
+    """Wrapper around StructuredQueryOutputParser that fixes Unicode escape sequences"""
+
+    def __init__(self, base_parser):
+        self.base_parser = base_parser
+
+    def parse(self, text: str):
+        """Parse text after fixing Unicode escapes"""
+        import re
+        import codecs
+
+        # Fix malformed Unicode escapes by decoding them properly
+        # This handles cases like \u1ee4c by converting to actual Vietnamese characters
+        def fix_unicode_escapes(match):
+            try:
+                # Extract the Unicode code point and decode it
+                unicode_str = match.group(0)
+                # Use codecs to decode the escape sequence
+                return codecs.decode(unicode_str, 'unicode_escape')
+            except:
+                # If decoding fails, return the original string
+                return match.group(0)
+
+        # Find all \uXXXX patterns and fix them
+        try:
+            # Try to fix Unicode escapes using built-in string encoding
+            fixed_text = text.encode().decode('unicode_escape')
+        except:
+            # If that fails, try manual replacement
+            try:
+                # Pattern to match \uXXXX sequences
+                pattern = r'\\u[0-9a-fA-F]{4}'
+                fixed_text = re.sub(pattern, fix_unicode_escapes, text)
+            except:
+                # If all else fails, use original text
+                fixed_text = text
+
+        # Now parse with the base parser
+        return self.base_parser.parse(fixed_text)
+
+    def invoke(self, input_dict):
+        """Handle invoke calls for LCEL chains"""
+        # For LCEL chains, the input is the raw text output from LLM
+        if isinstance(input_dict, str):
+            return self.parse(input_dict)
+        return self.base_parser.invoke(input_dict)
+
+# Wrap the parser with Unicode fixing capability
+parser_phap_luat_fixed = UnicodeFixingParser(parser_phap_luat)
+
 # --- Kết hợp prompt và LLM ---
-llm_constructor_phap_luat = prompt_truy_van_phap_luat | llm_query | parser_phap_luat
+llm_constructor_phap_luat = prompt_truy_van_phap_luat | llm_query | parser_phap_luat_fixed
 
 # --- Tạo SelfQueryRetriever ---
 retriever_phap_luat = SelfQueryRetriever(
