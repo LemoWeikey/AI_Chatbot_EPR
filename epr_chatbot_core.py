@@ -3746,10 +3746,13 @@ async def _generate_legal_answer(
    - Nêu các quy định liên quan (nếu có)
    - Đề xuất các vấn đề cần lưu ý thêm
 
+⚠️ KHÔNG BAO GIỜ viết "N/A" hoặc để trống các mục - CHỈ viết thông tin có thực tế từ tài liệu
+
 **ĐỊNH DẠNG TRẢ LỜI:**
 - Sử dụng đề mục rõ ràng khi cần thiết
 - In đậm các điểm quan trọng
-- Trích dẫn pháp luật trong ngoặc hoặc format rõ ràng"""
+- Trích dẫn pháp luật trong ngoặc hoặc format rõ ràng
+- BỎ QUA các mục không có thông tin thay vì viết N/A"""
 
     user_prompt = f"""**TÀI LIỆU PHÁP LUẬT THAM KHẢO:**
 
@@ -3761,7 +3764,12 @@ async def _generate_legal_answer(
 **YÊU CẦU TRẢ LỜI:**
 Hãy trả lời câu hỏi một cách chi tiết, chuyên nghiệp dựa HOÀN TOÀN trên tài liệu pháp luật được cung cấp.
 
-Cấu trúc câu trả lời nên bao gồm:
+⚠️ QUAN TRỌNG:
+- KHÔNG viết "N/A" hoặc để trống các mục
+- CHỈ bao gồm các mục có thông tin thực tế từ tài liệu
+- BỎ QUA hoàn toàn các mục không có thông tin
+
+Cấu trúc câu trả lời có thể bao gồm (chỉ viết các mục có thông tin):
 
 1. **Tóm tắt câu trả lời** (2-3 câu)
    - Trả lời trực tiếp vào vấn đề chính
@@ -3775,11 +3783,11 @@ Cấu trúc câu trả lời nên bao gồm:
    - Nêu rõ điều kiện, phạm vi áp dụng
    - Phân biệt các trường hợp (nếu có)
 
-4. **Hướng dẫn thực hiện** (nếu phù hợp)
+4. **Hướng dẫn thực hiện** (CHỈ viết nếu tài liệu có thông tin cụ thể)
    - Các bước cụ thể
    - Thời hạn, hồ sơ cần thiết
 
-5. **Lưu ý quan trọng**
+5. **Lưu ý quan trọng** (CHỈ viết nếu có thông tin thực tế)
    - Các ngoại lệ
    - Điểm cần chú ý
    - Chế tài xử phạt (nếu có)
